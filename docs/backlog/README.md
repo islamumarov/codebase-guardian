@@ -4,11 +4,14 @@ The implementation plan is [BACKLOG.md](BACKLOG.md). It implements the design sp
 
 Tasks run strictly in order. Each one ends with `dotnet test` green and its own commit.
 
-| Epic | Tasks | Status |
-|---|---|---|
-| 1. Core Guardian (local) | 1–15: hosting, git, repo tools, Skills, Events (poll/stream), watcher, checks, secrets, dependencies, skill content, stateless HTTP, demo client | Not started |
-| 2. GitHub + webhooks | 16–21: GitHub client, confirmed action tools, GitHub events, HTTP auth, webhook subscriptions, webhook dispatcher | Not started |
-| 3. Tasks | 22–23: Tasks extension, `full_scan` | Not started |
+- [STATUS.md](STATUS.md): which tasks are complete, plus every ruling and deferred finding. This is the durable record.
+- [CONTROLLER.md](CONTROLLER.md): the procedure that runs the tasks. It covers the subagent loop, the `sdd-lock` branch that allows one controller at a time, and push rules. The interactive session and the scheduled cloud routine ("Codebase Guardian backlog", every 2 hours) both follow it.
+
+| Epic | Tasks |
+|---|---|
+| 1. Core Guardian (local) | 1–15: hosting, git, repo tools, Skills, Events (poll/stream), watcher, checks, secrets, dependencies, skill content, stateless HTTP, demo client |
+| 2. GitHub + webhooks | 16–21: GitHub client, confirmed action tools, GitHub events, HTTP auth, webhook subscriptions, webhook dispatcher |
+| 3. Tasks | 22–23: Tasks extension, `full_scan` |
 
 Reference material the tasks cite:
 

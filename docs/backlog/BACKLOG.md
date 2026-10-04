@@ -28,7 +28,7 @@
 - Secret values are never logged, returned, or stored unredacted.
 - Tests: xunit.v3; `dotnet test` from the repo root must pass with no network access. Git tests use real temporary repositories via the `TempGitRepo` fixture. Use `TestContext.Current.CancellationToken` for test cancellation tokens.
 - Use `TimeProvider` (injected, default `TimeProvider.System`) for anything time-dependent that tests must control.
-- Each task ends with all tests green (`dotnet test` at repo root) and one or more commits on the current branch. Commit messages: Conventional Commits, ending with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never push.
+- Each task ends with all tests green (`dotnet test` at repo root) and one or more commits on the current branch. Commit messages: Conventional Commits, ending with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never push from a task; controllers push (see `docs/backlog/CONTROLLER.md`).
 - Do not edit files owned by other tasks beyond what the task lists; if something outside scope is broken, report it.
 
 ## Review Focus
@@ -248,11 +248,11 @@ public static class GitRevision
 
 public interface IGitRepository
 {
-    string RootPath { get; }    // full path from GuardianOptions.RepositoryPath
+    string RootPath { get; }    // `git rev-parse --show-toplevel` of GuardianOptions.RepositoryPath, resolved once and cached (ruling R9)
     Task<RepoStatus> GetStatusAsync(CancellationToken ct = default);
     Task<string?> GetCurrentBranchAsync(CancellationToken ct = default);          // null when detached or unborn
     Task<string?> GetHeadShaAsync(CancellationToken ct = default);                // null when repository has no commits
-    Task<IReadOnlyDictionary<string, string>> GetBranchHeadsAsync(CancellationToken ct = default);  // refs/heads/<name> -> sha
+    Task<IReadOnlyDictionary<string, string>> GetBranchHeadsAsync(CancellationToken ct = default);  // short branch name ("main") -> full SHA (ruling R1)
     Task<IReadOnlyList<CommitInfo>> GetRecentCommitsAsync(int limit, string? revision = null, CancellationToken ct = default); // newest first
     // Commits reachable from tip but from none of excludeTips; OLDEST first; at most limit (keeps the newest `limit` if more).
     Task<IReadOnlyList<CommitInfo>> GetNewCommitsAsync(string tip, IReadOnlyCollection<string> excludeTips, int limit, CancellationToken ct = default);
@@ -291,6 +291,7 @@ public interface IGitRepository
   - `ListFilesAsync` includes untracked, excludes `.gitignore`d files.
   - `GetRemoteUrlAsync` returns null without remote; returns URL after `git remote add origin https://github.com/acme/widgets.git`.
   - invalid revision `--upload-pack=x` → `ArgumentException`; non-repo directory → `GitException`.
+  - repository opened through a subdirectory (`RepositoryPath = <repo>/src`): `RootPath` equals the top-level directory and `ListFilesAsync` paths stay root-relative (ruling R9).
 
 **Acceptance:**
 - [ ] `dotnet test` green.
@@ -394,6 +395,7 @@ public static class FrontmatterParser
 - `MimeTypes`: `.md` text/markdown, `.txt` text/plain, `.json` application/json, `.yaml`/`.yml` application/yaml, `.py` text/x-python, `.sh` text/x-shellscript, `.cs` text/x-csharp, `.js` text/javascript, `.ts` text/typescript, `.csv` text/csv, `.html` text/html, `.png` image/png, `.svg` image/svg+xml; otherwise application/octet-stream.
 - Directory URIs: skill root `skill://<skill-path>` and each subdirectory `skill://<skill-path>/<dir>`, never a trailing slash. `TryListDirectory` returns false for unknown URIs and for file URIs.
 - Multiple roots are merged; duplicate skill URIs across roots → validation error.
+- A configured root directory that does not exist → validation error `Skills directory not found: <path>`, collected with the others (ruling R2).
 
 **Tests (write first)** — `SkillFixture` writes trees under a temp dir:
 - single skill `git-workflow` with `SKILL.md` only → one skill, URI `skill://git-workflow/SKILL.md`, root `skill://git-workflow`, Files has exactly the self entry with digest equal to an independently computed SHA-256 of the bytes.
@@ -408,6 +410,7 @@ public static class FrontmatterParser
 - hidden `.DS_Store` ignored; symlink rejected (skip test on platforms where creating symlinks fails).
 - directory listing: root lists `SKILL.md` (file) and `references` (inode/directory); `references` lists its files; listing `SKILL.md` URI → false; unknown → false.
 - limits: 513 files → error (generate tiny files).
+- a root directory that does not exist → error naming that path (ruling R2).
 
 **Acceptance:**
 - [ ] `dotnet test` green.
@@ -1029,6 +1032,8 @@ public sealed class GuardianHttpTestHost : IAsyncDisposable
 - Binding: refuse to start when `HttpUrl` host is not loopback (`127.0.0.1`, `::1`, `localhost`) unless `HttpAllowRemote` is true; message explains the risk (no auth until Task 19).
 - Stateless mode (`HttpServerSessionMode.Stateless`). Everything request/response must work; `events/stream` works as a long-lived POST with SSE (SDK §3, §4 — cancellation by closing the stream).
 - Hosted services (watcher) run in HTTP mode too.
+- `HttpHost.Build` forces `GuardianOptions.Transport = Http` whatever the configuration says, so options always describe the running transport (ruling R5; Task 19 relies on it).
+- HTTP tests run a real Kestrel on `127.0.0.1:0` (SDK §10 recipe) instead of the WebApplicationFactory/TestServer named in spec §8: long-lived SSE and cancellation were verified on Kestrel, and tests stay in-process and offline (ruling R6).
 
 **Tests (write first)** — `GuardianHttpTestHost` on a `TempGitRepo`, SDK `HttpClientTransport`:
 - `/healthz` → 200 "ok".
@@ -1087,7 +1092,7 @@ public sealed class GuardianHttpTestHost : IAsyncDisposable
 **Files:**
 - Create: `src/CodebaseGuardian/GitHub/GitHubOptions.cs`, `GitHubRepositoryRef.cs`, `IGitHubTokenProvider.cs`, `GitHubTokenProvider.cs`, `IGitHubRepositoryResolver.cs`, `GitHubRepositoryResolver.cs`, `GitHubModels.cs`, `IGitHubClient.cs`, `GitHubClient.cs`, `GitHubExceptions.cs`
 - Modify: `src/CodebaseGuardian/Hosting/GuardianServiceCollectionExtensions.cs` (bind `GitHubOptions`, register provider/resolver singletons, `services.AddHttpClient<IGitHubClient, GitHubClient>(GitHubClient.HttpClientName)`)
-- Modify: `tests/CodebaseGuardian.Tests/Infrastructure/GuardianTestHost.cs` (default `Guardian:GitHub:Enabled=false` unless the caller overrides it)
+- Modify: `tests/CodebaseGuardian.Tests/Infrastructure/GuardianTestHost.cs` and `GuardianHttpTestHost.cs` (default `Guardian:GitHub:Enabled=false` unless the caller overrides it; ruling R3)
 - Create: `tests/CodebaseGuardian.Tests/Infrastructure/FakeGitHubApi.cs`
 - Create: `tests/CodebaseGuardian.Tests/App/GitHubRepositoryRefTests.cs`, `GitHubTokenProviderTests.cs`, `GitHubClientTests.cs`
 
@@ -1195,7 +1200,7 @@ public sealed class FakeGitHubApi : HttpMessageHandler
 - Errors: 401 → `GitHubApiException(401, "GitHub rejected the token (401).")`; 403/429 with `x-ratelimit-remaining: 0` → `GitHubRateLimitException(resetAt = x-ratelimit-reset epoch seconds)`, with `retry-after` → now + seconds; other non-2xx → `GitHubApiException(status, <GitHub "message"> + "; " + errors[].message)` cut to 500 chars. Messages never contain the token or request headers.
 - `GetRepositoryAsync` (and every other method, which call it first): `Enabled == false` → `GitHubUnavailableException("GitHub integration is disabled (Guardian:GitHub:Enabled=false).")`; no token → `"No GitHub token: set GITHUB_TOKEN or run `gh auth login`."`; no GitHub repo → `"The origin remote is not a github.com repository; set Guardian:GitHub:Owner and Guardian:GitHub:Repository."`.
 - `GitHubTokenProvider` takes an internal constructor seam `Func<string, string?> getEnvironmentVariable` (default `Environment.GetEnvironmentVariable`) so tests never touch the real environment.
-- `GuardianTestHost` defaults `Guardian:GitHub:Enabled=false` so no test ever reaches api.github.com, even on a machine with `GITHUB_TOKEN` or `gh` logged in.
+- `GuardianTestHost` and `GuardianHttpTestHost` default `Guardian:GitHub:Enabled=false` so no test ever reaches api.github.com, even on a machine with `GITHUB_TOKEN` or `gh` logged in.
 
 **Tests (write first):**
 - `GitHubRepositoryRefTests`: the five accepted URL forms → `acme/widgets`; `https://gitlab.com/acme/widgets.git`, `https://github.com/acme`, `https://github.com/acme/widgets/extra`, `file:///tmp/x` → false.
@@ -1289,7 +1294,8 @@ public static class OutboundTextGuard
 - Create: `src/CodebaseGuardian/GitHub/GitHubEventPoller.cs` (`BackgroundService`)
 - Modify: `src/CodebaseGuardian/Watching/GuardianEvents.cs` (add `public static void RegisterGitHub(EventsOptions options)`)
 - Modify: `src/CodebaseGuardian/Security/SecretScanner.cs` and `ISecretScanner` (add `string RedactSecrets(string text)`)
-- Modify: `src/CodebaseGuardian/Hosting/GuardianServiceCollectionExtensions.cs` (call `RegisterGitHub` when `GitHubOptions.Enabled`; add the poller hosted service when `Enabled && PollEnabled`)
+- Modify: `src/CodebaseGuardian/Hosting/GuardianServiceCollectionExtensions.cs` (call `RegisterGitHub` when `GitHubOptions.Enabled`; register `GitHubEventPoller` as a singleton when `Enabled`, and add `AddHostedService(sp => sp.GetRequiredService<GitHubEventPoller>())` only when `Enabled && PollEnabled` — ruling R7)
+- Modify: `tests/CodebaseGuardian.Tests/Infrastructure/GuardianTestHost.cs` and `GuardianHttpTestHost.cs` (default `Guardian:GitHub:PollEnabled=false`; ruling R4)
 - Modify: `src/CodebaseGuardian/skills/guardian/SKILL.md`, `skills/guardian/references/events.md`, `skills/bug-triage/SKILL.md`, `skills/pr-review/SKILL.md`
 - Modify: `tests/CodebaseGuardian.Tests/App/SkillContentTests.cs` (start its host with `Guardian:GitHub:Enabled=true`, `Guardian:GitHub:PollEnabled=false` and `FakeGitHubApi.Install`, so GitHub events and tools exist for the lint)
 - Modify: `tests/CodebaseGuardian.Tests/App/GuardianEventsTests.cs` (seven names with GitHub disabled; ten with it enabled)
@@ -1642,7 +1648,7 @@ public sealed record ReceivedWebhook(IReadOnlyDictionary<string, string> Headers
 - gap: `Capacity = 5`, `Gate` holds event 1, publish 10 more, release → the receiver gets a body with `"type":"gap"` and `webhook-id` starting `msg_gap_`, then later events.
 - expiry: `MinTtl = 200 ms`, subscribe with `ttlMs: 200`; after 500 ms a published event is not delivered and a new subscribe creates a fresh subscription (verification is cached, so no new verification POST).
 - unsubscribe stops delivery (event published after unsubscribe never arrives within 500 ms).
-- delivery-time SSRF: subscribe to `http://127.0.0.1:<port>/hooks` with the flag on, deliver one event; set `options.Webhooks.AllowInsecureLoopback = false`; publish → no POST arrives and a refresh shows `lastError: "connection_refused"`.
+- delivery-time SSRF: subscribe to `http://127.0.0.1:<port>/hooks` with the flag on, deliver one event; set `options.Webhooks.AllowInsecureLoopback = false`; publish → no POST arrives and the subscription's `LastError`, read from `WebhookSubscriptionStore` resolved from `server.Services`, is `"connection_refused"` (a refresh would fail URL validation once the flag is off; ruling R8).
 - suspension: `SuspendMinAttempts = 4`, `SuspendFailureRate = 0.9`, receiver always 500 → `deliveryStatus.active == false`; receiver fixed + refresh → `active == true` and the pending event arrives.
 
 **Acceptance:**
@@ -1741,7 +1747,7 @@ public static class ScanReportRenderer { public static string Render(ScanReport 
 - Tool `full_scan(includeChecks = true)`: `ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true`, task mode Required (Task 22 selector). Structured result `{scanId, reportUri, secretFindings, vulnerablePackages, outdatedPackages, checksPassed, durationMs}` plus a one-line text summary. Description: "Runs as an MCP task; clients without task support should call `scan_secrets`, `audit_dependencies` and `run_checks` instead."
 - Resource template `guardian://scans/{scanId}/report` (`text/markdown`) → the stored Markdown; unknown id → `McpProtocolException(InvalidParams)`.
 - Skills: `guardian` gains the `scan.completed` row; `security-audit` and `dependency-hygiene` describe reacting to `scan.completed` (read `reportUri`) and the per-tool fallback when tasks are unavailable.
-- README: Tasks section (which tools run as tasks, how to enable the client capability), `full_scan`, the full event table (Epics 1–3), webhook setup (API key, `Guardian:Webhooks:*`, dev flag warning), GitHub setup (`GITHUB_TOKEN` / `gh auth login`, `Guardian:GitHub:*`), and the "Status" line changed to "Feature complete for v1 (see docs/backlog)". `docs/backlog/README.md`: mark all tasks done.
+- README: Tasks section (which tools run as tasks, how to enable the client capability), `full_scan`, the full event table (Epics 1–3), webhook setup (API key, `Guardian:Webhooks:*`, dev flag warning), GitHub setup (`GITHUB_TOKEN` / `gh auth login`, `Guardian:GitHub:*`), and the "Status" line changed to "Feature complete for v1 (see docs/backlog)". `docs/backlog/README.md`: add one line saying v1 is feature complete (task-level detail stays in `STATUS.md`).
 
 **Tests (write first):**
 - `FullScanServiceTests` (fakes for scanner/auditor/runner/resolver or `FakeProcessRunner` + `TempGitRepo`):
