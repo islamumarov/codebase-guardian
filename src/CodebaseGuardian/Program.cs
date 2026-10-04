@@ -1,14 +1,46 @@
+using CodebaseGuardian.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
-var builder = Host.CreateApplicationBuilder(args);
+var arguments = GuardianCommandLine.Normalize(args);
+
+var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+{
+    Args = arguments,
+
+    // appsettings.json is read from the tool's own directory, not the working directory: the working directory is usually
+    // the repository being watched, and a repository must not be able to configure the tool that watches it.
+    ContentRootPath = AppContext.BaseDirectory,
+});
+
+// Configuration sources, lowest to highest priority: appsettings.json (optional), environment variables
+// (GUARDIAN__RepositoryPath maps to Guardian:RepositoryPath), then the command line through its switch mappings.
+builder.Configuration.AddCommandLine(arguments, new Dictionary<string, string>(GuardianCommandLine.SwitchMappings));
+
+if (builder.Configuration.GetValue<GuardianTransport>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.Transport)}")
+    == GuardianTransport.Http)
+{
+    Console.Error.WriteLine("HTTP transport is not available yet (Task 14).");
+    return 2;
+}
 
 // stdout carries MCP protocol messages; all logs go to stderr.
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 
 builder.Services
-    .AddMcpServer(o => o.ServerInfo = new() { Name = "codebase-guardian", Version = "0.1.0" })
+    .AddCodebaseGuardian(builder.Configuration)
     .WithStdioServerTransport();
 
-await builder.Build().RunAsync();
+try
+{
+    await builder.Build().RunAsync();
+    return 0;
+}
+catch (OptionsValidationException exception)
+{
+    Console.Error.WriteLine($"codebase-guardian: invalid configuration.{Environment.NewLine}{exception.Message}");
+    return 2;
+}
