@@ -7,9 +7,13 @@ namespace CodebaseGuardian.Tests.Infrastructure;
 /// A throwaway Git repository in a temporary directory, driven through the <c>git</c> CLI.
 /// </summary>
 /// <remarks>
-/// Git runs hermetically: the developer's global and system configuration (excludes, autocrlf, hooks, signing, ...) and any
-/// inherited <c>GIT_DIR</c>-style variables (set when the tests run from a Git hook) never reach it, so every machine
-/// commits exactly the same thing.
+/// Git is isolated from the machine it runs on, so what a test commits does not depend on whose machine that is. It sees no
+/// user-level or system-level configuration, ignore or attributes files (<c>HOME</c>, <c>XDG_CONFIG_HOME</c> and
+/// <c>USERPROFILE</c> point at an empty directory that belongs to the repository, and system configuration is skipped), none
+/// of the machine's <c>GIT_*</c> environment variables (identity, injected configuration, template directory,
+/// <c>GIT_DIR</c> when the tests run from a Git hook, ...), and no template directory; its messages stay in English.
+/// Not isolated: the git executable itself, its version, and <c>PATH</c>. Code under test that starts git on its own,
+/// for example through the application's process runner, is not isolated either.
 /// </remarks>
 public sealed class TempGitRepo : IDisposable
 {
@@ -18,25 +22,41 @@ public sealed class TempGitRepo : IDisposable
 
     private static readonly TimeSpan GitTimeout = TimeSpan.FromSeconds(60);
 
-    private static readonly string[] InheritedRepositoryVariables =
-    [
-        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_PREFIX",
-    ];
+    private readonly string _home;
+    private readonly IReadOnlyDictionary<string, string?> _ambientEnvironment;
 
-    private TempGitRepo(string path) => Path = path;
+    private TempGitRepo(string path, string home, IReadOnlyDictionary<string, string?> ambientEnvironment)
+    {
+        Path = path;
+        _home = home;
+        _ambientEnvironment = ambientEnvironment;
+    }
 
     /// <summary>Full path of the repository's working directory.</summary>
     public string Path { get; }
 
     /// <summary>Creates a repository on branch <c>main</c> with a test identity and unsigned commits.</summary>
-    public static TempGitRepo Create()
+    public static TempGitRepo Create() => CreateWithAmbientEnvironment(new Dictionary<string, string?>());
+
+    /// <summary>
+    /// Like <see cref="Create"/>, but first adds <paramref name="ambientEnvironment"/> to the environment that git would inherit
+    /// from the test process (a <c>null</c> value removes the variable). This simulates a developer machine, for example
+    /// one with a global ignore file or <c>GIT_AUTHOR_NAME</c> set, without touching the test process's own environment.
+    /// </summary>
+    internal static TempGitRepo CreateWithAmbientEnvironment(IReadOnlyDictionary<string, string?> ambientEnvironment)
     {
-        var repo = new TempGitRepo(IoPath.Combine(IoPath.GetTempPath(), $"guardian-repo-{Guid.NewGuid():N}"));
-        Directory.CreateDirectory(repo.Path);
+        var id = Guid.NewGuid().ToString("N");
+        var repo = new TempGitRepo(
+            IoPath.Combine(IoPath.GetTempPath(), $"guardian-repo-{id}"),
+            IoPath.Combine(IoPath.GetTempPath(), $"guardian-repo-{id}-home"), // outside the working tree, so it is never committed
+            ambientEnvironment);
         try
         {
-            repo.Git("init", "-b", "main");
+            Directory.CreateDirectory(repo.Path);
+            Directory.CreateDirectory(repo._home);
+
+            // The empty template keeps the machine's template directory (sample or real hooks, info/exclude, ...) out of .git.
+            repo.Git("init", "-b", "main", "--template=");
             repo.Git("config", "user.name", AuthorName);
             repo.Git("config", "user.email", AuthorEmail);
             repo.Git("config", "commit.gpgsign", "false");
@@ -102,22 +122,28 @@ public sealed class TempGitRepo : IDisposable
                 $"git {string.Join(' ', args)} failed with exit code {process.ExitCode}: {error.Trim()}");
     }
 
-    /// <summary>Deletes the repository directory. Best effort: a locked temporary directory must not fail a test.</summary>
+    /// <summary>Deletes the repository and its isolated home directory. Best effort: a locked temporary directory must not fail a test.</summary>
     public void Dispose()
+    {
+        DeleteDirectory(Path);
+        DeleteDirectory(_home);
+    }
+
+    private static void DeleteDirectory(string path)
     {
         try
         {
-            if (!Directory.Exists(Path))
+            if (!Directory.Exists(path))
             {
                 return;
             }
 
-            foreach (var file in Directory.EnumerateFiles(Path, "*", SearchOption.AllDirectories))
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
             {
                 File.SetAttributes(file, FileAttributes.Normal); // Git stores objects read-only, which blocks deletion on Windows.
             }
 
-            Directory.Delete(Path, recursive: true);
+            Directory.Delete(path, recursive: true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -156,14 +182,34 @@ public sealed class TempGitRepo : IDisposable
             startInfo.ArgumentList.Add(argument);
         }
 
-        foreach (var variable in InheritedRepositoryVariables)
+        var environment = startInfo.Environment;
+        foreach (var (name, value) in _ambientEnvironment)
         {
-            startInfo.Environment.Remove(variable);
+            if (value is null)
+            {
+                environment.Remove(name);
+            }
+            else
+            {
+                environment[name] = value;
+            }
         }
 
-        startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
-        startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
-        startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        // Git is steered by GIT_* variables (author and committer, injected configuration, template directory, GIT_DIR, ...)
+        // and new ones appear with new versions: none of the machine's reaches it, whatever its name.
+        foreach (var name in environment.Keys.Where(key => key.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            environment.Remove(name);
+        }
+
+        // Git reads the user-level configuration, ignore and attributes files from under HOME and XDG_CONFIG_HOME; an empty
+        // directory has none, and unlike GIT_CONFIG_GLOBAL this works for every git version and every kind of file.
+        environment["HOME"] = _home;
+        environment["XDG_CONFIG_HOME"] = _home;
+        environment["USERPROFILE"] = _home;
+        environment["GIT_CONFIG_NOSYSTEM"] = "1"; // no system-level configuration either
+        environment["GIT_TERMINAL_PROMPT"] = "0";
+        environment["LC_ALL"] = "C"; // git's messages stay in English
         return startInfo;
     }
 }
