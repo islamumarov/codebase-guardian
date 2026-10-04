@@ -21,7 +21,8 @@ public class HostingTests
             repo.Path, cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal("codebase-guardian", server.Client.ServerInfo.Name);
-        Assert.False(string.IsNullOrWhiteSpace(server.Client.ServerInfo.Version));
+        // The csproj <Version>, followed by the "+<commit>" suffix the SDK appends to the informational version.
+        Assert.StartsWith("0.1.0-alpha", server.Client.ServerInfo.Version, StringComparison.Ordinal);
     }
 
     [Fact]

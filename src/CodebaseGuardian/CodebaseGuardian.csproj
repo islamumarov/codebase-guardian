@@ -9,7 +9,7 @@
     <ToolCommandName>codebase-guardian</ToolCommandName>
     <PackageType>McpServer</PackageType>
     <PackageId>CodebaseGuardian</PackageId>
-    <PackageVersion>0.1.0-alpha</PackageVersion>
+    <Version>0.1.0-alpha</Version>
     <Description>Proactive Codebase Guardian: an MCP server that watches a Git repository, pushes events, and ships Skills that tell the agent how to react.</Description>
     <PackageTags>AI; MCP; server; skills; events; tasks; git</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
