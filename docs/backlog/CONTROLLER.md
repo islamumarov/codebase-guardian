@@ -65,11 +65,18 @@ If the tip says `state=held` and its age is under 10800 s, another controller is
 
 ```bash
 W=.superpowers/sdd/BACKLOG
+TREE=$(git hash-object -t tree -w /dev/null)
 # PARENT: acquire -> current remote tip (empty if the branch does not exist yet); heartbeat/release -> $(cat $W/lock-sha)
 PARENT=$(git rev-parse -q --verify origin/sdd-lock || true)
-NEW=$(git commit-tree "$(git hash-object -t tree -w /dev/null)" ${PARENT:+-p "$PARENT"} -m "sdd-lock state=STATE owner=OWNER")
-git push origin "$NEW:refs/heads/sdd-lock" && echo "$NEW" > $W/lock-sha
+if [ -n "$PARENT" ]; then
+  NEW=$(git commit-tree "$TREE" -p "$PARENT" -m "sdd-lock state=STATE owner=OWNER")
+else
+  NEW=$(git commit-tree "$TREE" -m "sdd-lock state=STATE owner=OWNER")
+fi
+git push origin "${NEW}:refs/heads/sdd-lock" && echo "${NEW}" > $W/lock-sha
 ```
+
+The snippets work in bash and zsh. Keep the braces in `${NEW}:refs/...`: zsh reads `$NEW:r` as a modifier and garbles the refspec.
 
 - **Acquire** before any change. If the push is rejected, another controller won the race: end the run with no changes.
 - **Heartbeat** (`state=held`, parent `lock-sha`) after every completed task. If it is rejected, you lost the lock: stop immediately and push nothing else.
