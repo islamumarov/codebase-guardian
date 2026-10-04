@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>CodebaseGuardian</RootNamespace>
+
+    <!-- Distributed as a .NET tool / MCP server package -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>codebase-guardian</ToolCommandName>
+    <PackageType>McpServer</PackageType>
+    <PackageId>CodebaseGuardian</PackageId>
+    <PackageVersion>0.1.0-alpha</PackageVersion>
+    <Description>Proactive Codebase Guardian: an MCP server that watches a Git repository, pushes events, and ships Skills that tell the agent how to react.</Description>
+    <PackageTags>AI; MCP; server; skills; events; tasks; git</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include=".mcp/server.json" Pack="true" PackagePath="/.mcp/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Mcp.Skills/Mcp.Skills.csproj" />
+    <ProjectReference Include="../Mcp.Events/Mcp.Events.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+    <PackageReference Include="ModelContextProtocol.Extensions.Tasks" />
+  </ItemGroup>
+
+</Project>

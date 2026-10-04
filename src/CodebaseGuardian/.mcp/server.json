@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "description": "Proactive Codebase Guardian: watches a Git repository, pushes events, and ships Skills that tell the agent how to react.",
+  "name": "io.github.islamumarov/codebase-guardian",
+  "version": "0.1.0-alpha",
+  "packages": [
+    {
+      "registryType": "nuget",
+      "identifier": "CodebaseGuardian",
+      "version": "0.1.0-alpha",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [],
+      "environmentVariables": []
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/islamumarov/codebase-guardian",
+    "source": "github"
+  }
+}

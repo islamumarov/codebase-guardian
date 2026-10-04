@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/CodebaseGuardian/CodebaseGuardian.csproj" />
+  <Project Path="src/Mcp.Events/Mcp.Events.csproj" />
+  <Project Path="src/Mcp.Skills/Mcp.Skills.csproj" />
+  <Project Path="tests/CodebaseGuardian.Tests/CodebaseGuardian.Tests.csproj" />
+</Solution>

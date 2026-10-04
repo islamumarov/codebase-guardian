@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Generic server-side implementation of the draft MCP Events extension (Triggers & Events WG design sketch). -->
+  <PropertyGroup>
+    <RootNamespace>Mcp.Events</RootNamespace>
+    <Description>Server-side MCP Events (draft) for the MCP C# SDK: events/list, events/poll, events/stream, webhook subscriptions.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+
+</Project>

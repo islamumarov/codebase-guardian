@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Generic server-side implementation of the MCP Skills extension (io.modelcontextprotocol/skills, SEP-2640). -->
+  <PropertyGroup>
+    <RootNamespace>Mcp.Skills</RootNamespace>
+    <Description>Server-side MCP Skills extension (io.modelcontextprotocol/skills) for the MCP C# SDK.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+
+</Project>
