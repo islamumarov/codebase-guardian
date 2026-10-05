@@ -1,11 +1,61 @@
-# Codebase Guardian
+# Proactive Codebase Guardian
 
-An MCP server that turns an AI agent into a reactive and proactive software engineering assistant for a Git repository. It
-watches a repository, publishes events (new commit, changed dependencies, failing checks, detected secret), and every event
-that has a natural follow-up names a **suggested skill**: a packaged workflow the agent loads (`skills/get` +
-`resources/read`, verified against a SHA-256 digest) and carries out with the Guardian's tools.
+> An MCP server that turns AI agents into **reactive and proactive** software engineering assistants.
 
-Built on the MCP C# SDK 2.2.0 and .NET 10.
+**Codebase Guardian** watches a Git repository, pushes events the moment something important happens, and gives the agent
+structured **Agent Skills** and tools. The agent can then review commits, triage failing checks, respond to leaked secrets and
+keep dependencies healthy without constant polling or a human prompting each step.
+
+Every event that has a natural follow-up names a **suggested skill**. A skill is a packaged workflow that the agent loads
+(`skills/get` + `resources/read`, verified against a SHA-256 digest) and then carries out with the Guardian's tools.
+
+It is built on the Model Context Protocol `2026-07-28` revision, the MCP C# SDK 2.2.0 and .NET 10:
+
+- **MCP Events**: `events/list`, `events/poll`, and `events/stream` push delivery
+- **Skills extension** (`io.modelcontextprotocol/skills`, SEP-2640)
+- **Tools** and **Resources**, with the Tasks extension planned for long-running scans
+- **Stateless request/response core**: stdio and stateless Streamable HTTP
+
+> **Status:** Epic 1 (the local Guardian) is complete and tested. GitHub integration, webhook delivery and Tasks
+> (Epics 2 and 3) are in progress; the [Roadmap](#roadmap) lists what is still planned. The design is in
+> [docs/specs/2026-10-04-codebase-guardian-design.md](docs/specs/2026-10-04-codebase-guardian-design.md).
+
+---
+
+## Why this is useful
+
+Traditional AI coding assistants are **reactive**: they act only when a human asks. Engineering teams need assistants that
+**notice** problems and start on them.
+
+| Problem | How Codebase Guardian solves it |
+|---|---|
+| Agents have to keep polling for new commits, failing checks or leaked secrets | **MCP Events**: the server pushes a notification over `events/stream` when something changes. Clients without Events use the `poll_events` tool with the same semantics |
+| Complex workflows (security audit, bug triage, dependency upgrades) are hard to prompt reliably | Ships five ready-to-use **Agent Skills** that encode the procedure step by step and name the exact tools and resources to use |
+| An event alone does not say what to do next | Each event carries a `suggestedSkill` URI, so the agent knows which workflow to load |
+| Skill content could be tampered with in transit | Every skill file is listed with its size and SHA-256 digest, so clients can verify what they load |
+| Long-running analysis blocks the conversation | Designed for the **Tasks** extension: long scans will return a handle instead of blocking (planned, Epic 3) |
+| Scaling MCP servers used to require sticky sessions | Built on the **stateless `2026-07-28`** protocol: request/response methods need no session affinity |
+| Every team reinvents the same "watch this repo" logic | One reusable MCP server that any MCP client can connect to |
+
+**What it does today:**
+
+- When a commit lands, the agent is told (`repo.commit.created`) and can review it with the `pr-review` skill.
+- When a commit contains something that looks like a credential, `security.secret_detected` fires with redacted findings, and
+  the `security-audit` skill walks through revoke, rotate and clean-up.
+- When a dependency manifest changes, the `dependency-hygiene` skill audits for vulnerable and outdated packages.
+- When the build or tests fail (`checks.failed`), the `bug-triage` skill reads the stored log, reproduces the failure and
+  isolates the commit that caused it.
+
+**Planned (Epic 2):** react to new GitHub issues, PR comments and failed CI runs, and file an issue, comment on a PR or open a
+pull request from an already pushed branch. Every outward-facing action asks for confirmation first.
+
+This is the difference between an AI that answers questions and an AI that **helps run the engineering process**.
+
+---
+
+## Features
+
+### Protocol surface
 
 | MCP feature | How the Guardian uses it |
 |---|---|
@@ -15,9 +65,25 @@ Built on the MCP C# SDK 2.2.0 and .NET 10.
 | Events (Triggers & Events, **draft**) | `events/list`, `events/poll`, `events/stream` |
 | Stateless 2026-07-28 core | stdio and stateless Streamable HTTP |
 
-Status: Epic 1 (local Guardian) is complete. The design is in
-[docs/specs/2026-10-04-codebase-guardian-design.md](docs/specs/2026-10-04-codebase-guardian-design.md); the GitHub
-integration, webhooks and the Tasks extension (Epics 2 and 3) are planned and **not implemented**.
+### Bundled skills
+
+| Skill | Use it for | Triggered by |
+|---|---|---|
+| `guardian` | Load first: what the server watches, how to subscribe, the event-to-skill map, safety rules | — |
+| `security-audit` | Triage secret findings by rule, confirm with `scan_secrets`, revoke/rotate first, rewrite history only with consent | `security.secret_detected` |
+| `dependency-hygiene` | Run `audit_dependencies`, fix critical/high vulnerabilities first, major vs minor upgrade policy, verify with `run_checks` | `repo.dependencies.changed` |
+| `bug-triage` | Read the check log, reproduce, isolate with `recent_commits` and `diff_summary`, classify, write an issue report | `checks.failed` |
+| `pr-review` | Review a commit's diff against a checklist covering correctness, tests, security, naming and docs | `repo.commit.created` |
+
+New skills are a directory with a `SKILL.md`; point `--skills-dir` at your own directories to add them.
+
+### Modern MCP support
+
+- Protocol version `2026-07-28`, verified with the official MCP conformance suite: all three Skills scenarios pass (see
+  [docs/reference/conformance.md](docs/reference/conformance.md)).
+- stdio and stateless Streamable HTTP transports.
+- Works with any MCP client, for example Claude Code or VS Code. Clients that do not implement the draft `events/*` methods
+  get the same events through the `poll_events` tool.
 
 ## Quick start
 
@@ -146,9 +212,20 @@ Spec [section 7](docs/specs/2026-10-04-codebase-guardian-design.md).
 - Events are a **draft** (Triggers & Events working group sketch); the wire format may change.
 - State (event log, check runs, watcher cursors) lives in a single process and is lost on restart.
 - Dependency auditing covers NuGet and npm only.
-- No GitHub integration, webhook delivery or Tasks yet (Epics 2 and 3).
+- No GitHub tools or events, webhook delivery or Tasks yet (Epics 2 and 3; see [Roadmap](#roadmap)).
 - Conformance: the three Skills scenarios of the MCP conformance suite pass; the base 2026-07-28 suite passes everything that does
   not need the suite's own fixtures. Details: [docs/reference/conformance.md](docs/reference/conformance.md).
+
+## Roadmap
+
+| Epic | Delivers | State |
+|---|---|---|
+| 1. Core Guardian (local) | Git layer, repo tools and resources, Skills, Events (poll/stream), repo watcher, checks, secret scan, dependency audit, stateless HTTP, demo client | **Done** |
+| 2. GitHub + webhooks | GitHub client, `create_issue` / `comment_on_pr` / `open_pull_request` with confirmation, `github.issue.opened` / `github.pr.comment.created` / `github.ci.failed` events, HTTP auth, signed webhook delivery via `events/subscribe` | In progress (GitHub REST client done) |
+| 3. Tasks | Tasks extension, task-capable `run_checks` and `audit_dependencies`, `full_scan` with a report resource | Planned |
+
+Non-goals for v1: shared state across instances, ecosystems beyond NuGet and npm, auto-fixing code or pushing commits.
+The agent makes changes with its own tools; the Guardian only opens PRs from branches that already exist on the remote.
 
 ## Architecture
 
