@@ -149,6 +149,28 @@ public class GitHubToolsTests
         Assert.DoesNotContain('\n', summary);
         Assert.DoesNotContain('\r', summary);
         Assert.StartsWith("Comment on acme/widgets#12: \"line one line two xxx", summary);
+
+        // A high surrogate as the 120th character of the excerpt is cut, not split.
+        seen.Clear();
+        var padding = new string('y', 119);
+        await server.Client.CallToolAsync("comment_on_pr",
+            new Dictionary<string, object?> { ["number"] = 12, ["body"] = padding + "\U0001F600tail" }, cancellationToken: Ct);
+        var emoji = Assert.Single(seen);
+        Assert.Equal($"Comment on acme/widgets#12: \"{padding}\"", emoji);
+
+        seen.Clear();
+        await server.Client.CallToolAsync("create_issue",
+            new Dictionary<string, object?> { ["title"] = "first\r\nsecond\nthird", ["body"] = "b", ["labels"] = new[] { "bug\nfix", "p1" } }, cancellationToken: Ct);
+        var issue = Assert.Single(seen);
+        Assert.Equal("Create issue in acme/widgets: \"first second third\" [labels: bug fix, p1]", issue);
+
+        seen.Clear();
+        await server.Client.CallToolAsync("open_pull_request",
+            new Dictionary<string, object?> { ["head"] = "feature", ["title"] = "multi\r\nline\ntitle", ["body"] = "b" }, cancellationToken: Ct);
+        var pr = Assert.Single(seen);
+        Assert.Equal("Open pull request in acme/widgets: feature \u2192 main \"multi line title\"", pr);
+        Assert.All(new[] { summary, emoji, issue, pr }, text => Assert.DoesNotContain('\n', text));
+        Assert.All(new[] { summary, emoji, issue, pr }, text => Assert.DoesNotContain('\r', text));
     }
 
     [Fact]

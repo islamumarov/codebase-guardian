@@ -53,7 +53,7 @@ public sealed partial class GitHubTools(IGitHubClient github, ISecretScanner sca
             OutboundTextGuard.EnsureNoSecrets(scanner, "title", title);
             OutboundTextGuard.EnsureNoSecrets(scanner, "body", body);
             var repo = await github.GetRepositoryAsync(cancellationToken);
-            var summary = $"Create issue in {repo.Owner}/{repo.Name}: \"{OneLine(title)}\"" + (labelList.Length > 0 ? $" [labels: {string.Join(", ", labelList)}]" : "");
+            var summary = $"Create issue in {repo.Owner}/{repo.Name}: \"{OneLine(title)}\"" + (labelList.Length > 0 ? $" [labels: {string.Join(", ", labelList.Select(OneLine))}]" : "");
             if (Decision(server, context, summary, confirm) is { } stop)
             {
                 return stop;
@@ -134,7 +134,7 @@ public sealed partial class GitHubTools(IGitHubClient github, ISecretScanner sca
                 throw new McpException($"Branch '{source}' is not on GitHub; push it first.");
             }
 
-            var summary = $"Open pull request in {repo.Owner}/{repo.Name}: {head} → {target} \"{title}\"";
+            var summary = $"Open pull request in {repo.Owner}/{repo.Name}: {OneLine(source)} → {OneLine(target)} \"{OneLine(title)}\"";
             if (Decision(server, context, summary, confirm) is { } stop)
             {
                 return stop;
