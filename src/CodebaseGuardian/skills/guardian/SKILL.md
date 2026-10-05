@@ -13,7 +13,7 @@ Load this skill first. It explains what the server watches, how to hear about ch
 
 ## What the server watches
 
-Codebase Guardian watches one local Git repository. It notices new commits, branch switches, edits in the working tree, changes to dependency manifests, finished check runs (build and tests) and secrets in new commits. Each of these becomes an event. The full list with payload fields is in [the event reference](references/events.md).
+Codebase Guardian watches one local Git repository. It notices new commits, branch switches, edits in the working tree, changes to dependency manifests, finished check runs (build and tests), secrets in new commits and full scans. Each of these becomes an event. The full list with payload fields is in [the event reference](references/events.md).
 
 ## Steps
 
@@ -37,6 +37,7 @@ Codebase Guardian watches one local Git repository. It notices new commits, bran
 | `checks.completed` | A check run finished | none; `checks.failed` covers failures |
 | `checks.failed` | A check run failed | `skill://bug-triage/SKILL.md` |
 | `security.secret_detected` | The scanner found a possible secret | `skill://security-audit/SKILL.md` |
+| `scan.completed` | A `full_scan` finished | the payload's `suggestedSkill`: `skill://security-audit/SKILL.md` with secrets, else `skill://dependency-hygiene/SKILL.md` with vulnerable packages, else none; read `reportUri` |
 | `github.issue.opened` | A new issue was opened on GitHub | `skill://bug-triage/SKILL.md` |
 | `github.pr.comment.created` | A comment was added to a pull request | `skill://pr-review/SKILL.md` |
 | `github.ci.failed` | A GitHub Actions run failed | `skill://bug-triage/SKILL.md` |
@@ -49,8 +50,10 @@ The three `github.*` events exist only when the server has a GitHub token and a 
 - `run_checks`: run the build and tests. One run at a time; it can take minutes.
 - `scan_secrets`: look for secrets in the working tree, the staged changes or one commit.
 - `audit_dependencies`: look for vulnerable and outdated packages.
+- `full_scan`: secrets, dependencies and checks in one run, with a Markdown report. It runs as an MCP task, so your client needs task support; without it call `scan_secrets`, `audit_dependencies` and `run_checks` yourself.
 - `poll_events`: read events without `events/*`.
 - `guardian://repo/status` and `guardian://repo/commits/recent`: the same data as `repo_status` and `recent_commits`.
+- `guardian://scans/{scanId}/report`: the Markdown report of a `full_scan`.
 - `guardian://checks/latest` and `guardian://checks/{runId}/log`: the newest check run and the full log of a run.
 
 ## Safety rules

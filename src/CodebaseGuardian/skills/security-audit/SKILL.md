@@ -9,12 +9,13 @@ metadata:
 
 # Security audit
 
-Use this when `security.secret_detected` arrives or when the user asks whether secrets are in the repository.
+Use this when `security.secret_detected` arrives, when `scan.completed` reports `secretFindings` above zero, or when the user asks whether secrets are in the repository.
 
 Never write a secret value into a message, file, issue or comment. Refer to a finding by `ruleId`, `path` and `line` only.
 
 ## Steps
 
+0. For `scan.completed`, read the Markdown report at its `reportUri` first: the Secrets table lists `Rule`, `Path`, `Line` and a redacted value for each finding. Then continue with step 2 using `working_tree`. To start a scan yourself call `full_scan`. It runs as an MCP task; if your client has no task support, call `scan_secrets`, `audit_dependencies` and `run_checks` instead.
 1. Read the event payload. For every entry in `findings` note `ruleId`, `path`, `line` and the redacted value. Note `commitSha` and `source`.
 2. Confirm each finding with `scan_secrets`. For a finding from a commit call it with `scope` set to `commit` and `commit` set to the `commitSha`. For pending changes use `staged`; for everything on disk use `working_tree`.
 3. Classify each confirmed finding by its `ruleId` with [the secret types table](references/secret-types.md). It tells you what the credential grants and how likely a false positive is.

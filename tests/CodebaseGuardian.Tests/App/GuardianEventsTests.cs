@@ -12,7 +12,7 @@ public class GuardianEventsTests
         ["runId", "command", "exitCode", "passed", "timedOut", "durationMs", "summary", "failedTests", "logUri", "trigger", "commitSha"];
 
     [Fact]
-    public async Task Events_list_contains_exactly_the_epic_one_events()
+    public async Task Events_list_contains_exactly_the_eight_non_github_events()
     {
         using var repo = TempGitRepo.Create();
         await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
@@ -21,7 +21,7 @@ public class GuardianEventsTests
         var events = result["events"]!.AsArray().ToDictionary(e => (string)e!["name"]!, e => e!.AsObject());
 
         Assert.Equal(
-            ["checks.completed", "checks.failed", "repo.branch.changed", "repo.commit.created", "repo.dependencies.changed", "repo.files.changed", "security.secret_detected"],
+            ["checks.completed", "checks.failed", "repo.branch.changed", "repo.commit.created", "repo.dependencies.changed", "repo.files.changed", "scan.completed", "security.secret_detected"],
             events.Keys.Order().ToList());
 
         AssertProperties(events["repo.commit.created"],
@@ -32,6 +32,8 @@ public class GuardianEventsTests
         AssertProperties(events["checks.completed"], CheckFields);
         AssertProperties(events["checks.failed"], [.. CheckFields, "suggestedSkill"]);
         AssertProperties(events["security.secret_detected"], "source", "commitSha", "findings", "suggestedSkill");
+        AssertProperties(events["scan.completed"], "scanId", "reportUri", "secretFindings", "vulnerablePackages", "checksPassed", "suggestedSkill");
+        Assert.Equal(["boolean", "null"], events["scan.completed"]["payloadSchema"]!["properties"]!["checksPassed"]!["type"]!.AsArray().Select(t => (string)t!).ToList());
 
         var author = events["repo.commit.created"]["payloadSchema"]!["properties"]!["author"]!["properties"]!.AsObject();
         Assert.Equal(["name", "email"], author.Select(p => p.Key).ToList());
@@ -52,7 +54,7 @@ public class GuardianEventsTests
         var result = await server.RequestAsync("events/list", cancellationToken: Ct);
         var events = result["events"]!.AsArray().ToDictionary(e => (string)e!["name"]!, e => e!.AsObject());
 
-        Assert.Equal(10, events.Count);
+        Assert.Equal(11, events.Count);
         Assert.Equal(
             ["github.ci.failed", "github.issue.opened", "github.pr.comment.created"],
             events.Keys.Where(k => k.StartsWith("github.", StringComparison.Ordinal)).Order().ToList());

@@ -9,6 +9,7 @@ using CodebaseGuardian.Git;
 using CodebaseGuardian.GitHub;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
+using CodebaseGuardian.Scanning;
 using CodebaseGuardian.Security;
 using CodebaseGuardian.Tools;
 using CodebaseGuardian.Watching;
@@ -78,6 +79,9 @@ public static class GuardianServiceCollectionExtensions
 
         services.AddSingleton<IDependencyAuditor, DependencyAuditor>();
 
+        services.AddSingleton<ScanReportStore>();
+        services.AddSingleton<IFullScanService, FullScanService>();
+
         services.AddGitHubIntegration(configuration);
         services.AddSingleton<IActionConfirmation, ActionConfirmation>();
 
@@ -108,8 +112,10 @@ public static class GuardianServiceCollectionExtensions
             .WithTools<SecurityTools>()
             .WithTools<DependencyTools>()
             .WithTools<GitHubTools>()
+            .WithTools<ScanTools>()
             .WithResources<RepositoryResources>()
-            .WithResources<CheckResources>();
+            .WithResources<CheckResources>()
+            .WithResources<ScanResources>();
     }
 
     /// <summary>Binds <see cref="GitHubOptions"/> and registers the GitHub token provider, repository resolver and REST client.</summary>

@@ -3,7 +3,7 @@ using Mcp.Events;
 
 namespace CodebaseGuardian.Watching;
 
-/// <summary>The Epic 1 part of the event catalog (spec section 5.5).</summary>
+/// <summary>The event catalog (spec section 5.5) that is always registered: Epic 1 plus scan.completed.</summary>
 public static class GuardianEvents
 {
     public static void Register(EventsOptions options)
@@ -74,6 +74,18 @@ public static class GuardianEvents
                   "findings":{"type":"array","items":{"type":"object","properties":{
                     "ruleId":{"type":"string"},"path":{"type":"string"},"line":{"type":"integer"},"redacted":{"type":"string"}}}},
                   "suggestedSkill":{"type":"string"}}}
+                """),
+        });
+
+        options.Define(new EventDefinition
+        {
+            Name = GuardianEventNames.ScanCompleted,
+            Description = "A full_scan finished. Read the Markdown report at reportUri. suggestedSkill is absent when the scan found nothing to act on.",
+            PayloadSchema = Obj("""
+                {"type":"object","properties":{
+                  "scanId":{"type":"string"},"reportUri":{"type":"string"},
+                  "secretFindings":{"type":"integer"},"vulnerablePackages":{"type":"integer"},
+                  "checksPassed":{"type":["boolean","null"]},"suggestedSkill":{"type":"string"}}}
                 """),
         });
     }

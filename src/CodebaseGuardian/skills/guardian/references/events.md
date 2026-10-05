@@ -28,6 +28,10 @@ Any check run finished. Payload: `runId`, `command`, `exitCode`, `passed`, `time
 
 A check run failed; `checks.completed` is also emitted. Same payload plus `suggestedSkill` (`skill://bug-triage/SKILL.md`).
 
+## scan.completed
+
+A `full_scan` finished. Payload: `scanId`, `reportUri` (a `guardian://scans/{scanId}/report` resource with the Markdown report), `secretFindings` (count), `vulnerablePackages` (count), `checksPassed` (true, false, or null when no checks ran), `suggestedSkill`. `suggestedSkill` is `skill://security-audit/SKILL.md` when `secretFindings` is above zero, else `skill://dependency-hygiene/SKILL.md` when `vulnerablePackages` is above zero; when the scan found neither, the key is absent.
+
 ## github.issue.opened
 
 A new issue (not a pull request) was opened on the GitHub repository. Needs a GitHub token and a github.com origin. Argument: `label` (optional; the issue must carry it).
