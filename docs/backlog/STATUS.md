@@ -63,3 +63,8 @@ Task 6: minor (deferred): the `IEventLog.GetSequence` interface doc lacks the "u
 Task 6: minor (deferred): `WaitAboveHeadIsNotCompletedByPublishThatDoesNotPassIt` asserts `IsCompleted == false` and could pass against the old code by scheduling luck.
 Task 6: minor (deferred): exceptions from an `EventDefinition.Matches` predicate propagate out of `Read`; Task 7 may wrap them.
 Task 6: minor (deferred): stray indentation at InMemoryEventLog.cs:33.
+Task 7: complete (commits eca8742..2a0107b, review clean after 1 fix round; suite 250/250)
+Ruling (T7): an exception from an `EventDefinition.Matches` predicate during `events/poll` becomes `-32603` with a generic message naming no predicate detail, and is logged server-side with the event name — predicate failures are server bugs and must not leak internals — if wrong: change one catch in `EventsConfigureOptions`.
+Ruling (T7): `Mcp.Events` exposes internals to `CodebaseGuardian.Tests` (`InternalsVisibleTo`) so the parser's `Unsupported` path, unreachable through poll, has a unit test — if wrong: drop the attribute and the one test.
+Task 7: minor (deferred): the `-32603` `McpProtocolException` does not carry the predicate exception as inner exception (SDK 2.2.0 has the `(string, Exception, McpErrorCode)` constructor).
+Task 7: minor (deferred): calling `WithEvents` twice registers duplicate handlers; no test for the `InvalidCursorException` backstop in the poll handler; no test for `"arguments": null`.
