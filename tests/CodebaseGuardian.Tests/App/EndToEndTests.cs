@@ -83,7 +83,7 @@ public class EndToEndTests
         // 5. cancel the stream the way the SDK needs it over a stream transport
         await host.Client.SendNotificationAsync(
             "notifications/cancelled", new CancelledNotificationParams { RequestId = new RequestId(StreamId) }, cancellationToken: Ct);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stream.WaitAsync(Timeout)); // the guard fails the test with a TimeoutException
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stream.WaitAsync(Timeout, Ct)); // the guard fails the test with a TimeoutException
 
         // The server really stopped: a further secret commit is detected but nothing reaches the cancelled stream.
         var before = Volatile.Read(ref delivered);

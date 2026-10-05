@@ -72,6 +72,7 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<IDependencyAuditor, DependencyAuditor>();
 
         services.AddGitHubIntegration(configuration);
+        services.AddSingleton<IActionConfirmation, ActionConfirmation>();
 
         // The watcher does nothing unless Guardian:WatchEnabled is set.
         services.AddHostedService<RepositoryWatcher>();
@@ -86,6 +87,7 @@ public static class GuardianServiceCollectionExtensions
             .WithTools<CheckTools>()
             .WithTools<SecurityTools>()
             .WithTools<DependencyTools>()
+            .WithTools<GitHubTools>()
             .WithResources<RepositoryResources>()
             .WithResources<CheckResources>();
     }
