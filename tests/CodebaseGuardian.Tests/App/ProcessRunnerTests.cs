@@ -94,4 +94,33 @@ public sealed class ProcessRunnerTests
 
         Assert.Equal("hello", result.StandardOutput.Trim());
     }
+
+    [Fact]
+    public async Task A_background_descendant_holding_the_pipes_does_not_outlive_the_timeout()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Needs a POSIX shell.");
+        var stopwatch = Stopwatch.StartNew();
+
+        var result = await _runner.RunAsync(
+            Spec("sh", "-c", "sleep 30 & echo hi") with { Timeout = TimeSpan.FromSeconds(1) }, TestContext.Current.CancellationToken);
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10), $"returned after {stopwatch.Elapsed}");
+        Assert.Equal(0, result.ExitCode);
+        Assert.False(result.TimedOut);
+        Assert.True(result.OutputTruncated);
+    }
+
+    [Fact]
+    public async Task Cancelling_while_a_background_descendant_holds_the_pipes_throws_promptly()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Needs a POSIX shell.");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(500));
+        var stopwatch = Stopwatch.StartNew();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => _runner.RunAsync(
+            Spec("sh", "-c", "sleep 30 & echo hi") with { Timeout = TimeSpan.FromMinutes(1) }, cts.Token));
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(10), $"returned after {stopwatch.Elapsed}");
+    }
 }
