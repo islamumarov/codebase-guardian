@@ -6,7 +6,7 @@ namespace CodebaseGuardian.Tests.Events;
 
 public class InMemoryEventLogTests
 {
-    private static readonly CancellationToken Ct = TestContext.Current.CancellationToken;
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
     private readonly FakeTimeProvider _time = new(new DateTimeOffset(2026, 10, 4, 12, 0, 0, TimeSpan.Zero));
 
     private static EventDefinition Def(string name, Func<JsonObject?, JsonObject, bool>? matches = null) => new()
@@ -193,12 +193,60 @@ public class InMemoryEventLogTests
     }
 
     [Fact]
-    public async Task CursorBeyondHeadOfSameEpochIsInvalid()
+    public async Task CursorBeyondHeadOfSameEpochIsAGap()
     {
         var log = NewLog();
         await Pub(log);
         var forged = EventCursor.Encode(EpochOf(log), 99);
-        Assert.Throws<InvalidCursorException>(() => log.Read(Q(forged)));
+        var r = log.Read(Q(forged));
+        Assert.Empty(r.Events);
+        Assert.True(r.Truncated);
+        Assert.False(r.HasMore);
+        Assert.Equal(log.HeadCursor, r.Cursor);
+    }
+
+    [Fact]
+    public async Task SuppliedIdWithGeneratedPrefixIsRejected()
+    {
+        var log = NewLog();
+        var generated = (await Pub(log)).EventId;
+        var prefix = generated[..^1];
+        await Assert.ThrowsAsync<ArgumentException>(async () => await Pub(log, id: prefix + "7"));
+    }
+
+    [Fact]
+    public async Task MutatingPredicateCannotChangeStoredEvents()
+    {
+        var options = new EventsOptions();
+        options.Define(Def("repo.pushed", (args, data) => { data["branch"] = "evil"; args!["branch"] = "evil"; return true; }));
+        var log = new InMemoryEventLog(options, _time);
+        var cursor = log.HeadCursor;
+        await log.PublishAsync("repo.pushed", D("orig"), null, null, Ct);
+        var arguments = D("a");
+        log.Read(Q(cursor, names: ["repo.pushed"], args: arguments));
+        Assert.Equal("a", (string?)arguments["branch"]);
+        Assert.Equal("orig", (string?)log.Read(Q(cursor)).Events[0].Data["branch"]);
+    }
+
+    [Fact]
+    public async Task WaitAboveHeadIsNotCompletedByPublishThatDoesNotPassIt()
+    {
+        var log = NewLog();
+        var wait = log.WaitForEventsAfterAsync(5, Ct);
+        await Pub(log);
+        await Task.Yield();
+        Assert.False(wait.IsCompleted);
+        for (var i = 0; i < 4; i++) await Pub(log);
+        Assert.False(wait.IsCompleted);
+        await Pub(log);
+        await wait.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+    }
+
+    [Fact]
+    public void TimeProviderDefaultsToSystem()
+    {
+        var log = new InMemoryEventLog(new EventsOptions());
+        Assert.Equal(0, log.GetSequence(log.HeadCursor));
     }
 
     [Fact]

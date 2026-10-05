@@ -10,8 +10,9 @@ namespace Mcp.Events;
 /// <para>
 /// Cursor policy: a cursor from another epoch (restart, other process) or older than the retained window yields
 /// <c>Truncated=true</c> and a read from the oldest retained event. A cursor of the current epoch whose sequence is
-/// greater than the head cannot have been issued by this log, so it is rejected as <see cref="InvalidCursorException"/>
-/// rather than silently treated as "caught up", which would hide events from a forged or corrupted cursor.
+/// greater than the head cannot have been issued by this log (forged or corrupted); per wire-format B11 that is a gap
+/// too: no events, <c>Truncated=true</c> and the head cursor. <see cref="InvalidCursorException"/> is reserved for
+/// undecodable cursors.
 /// </para>
 /// </summary>
 public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
@@ -26,13 +27,12 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
     private long _head;   // sequence of the newest event ever appended (0 = none)
     private TaskCompletionSource _signal = NewSignal();
 
-    public InMemoryEventLog(EventsOptions options, TimeProvider timeProvider)
+    public InMemoryEventLog(EventsOptions options, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(timeProvider);
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.Capacity, 1);
+                ArgumentOutOfRangeException.ThrowIfLessThan(options.Capacity, 1);
         _options = options;
-        _time = timeProvider;
+        _time = timeProvider ?? TimeProvider.System;
         _idPrefix = "evt_" + _epoch.ToString("N")[..8] + "_";
     }
 
@@ -45,6 +45,10 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
 
     public string CursorAfter(EventEnvelope envelope) => EventCursor.Encode(_epoch, envelope.Sequence);
 
+    /// <summary>
+    /// Decodes the sequence only; the epoch is NOT checked. Stream loops must pass a cursor returned by
+    /// <see cref="Read"/> (which is epoch-checked and normalised), not a raw client cursor.
+    /// </summary>
     public long GetSequence(string cursor) => EventCursor.Decode(cursor).Sequence;
 
     public ValueTask<EventEnvelope> PublishAsync(string name, JsonObject data, string? eventId = null,
@@ -57,6 +61,8 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
             throw new ArgumentException($"Event '{name}' is not defined.", nameof(name));
         if (eventId is not null && !EventIdPattern().IsMatch(eventId))
             throw new ArgumentException("eventId must match ^[A-Za-z0-9_-]{1,128}$.", nameof(eventId));
+        if (eventId is not null && eventId.StartsWith(_idPrefix, StringComparison.Ordinal))
+            throw new ArgumentException($"eventId must not start with the reserved prefix '{_idPrefix}'.", nameof(eventId));
 
         var clone = (JsonObject)data.DeepClone();
         TaskCompletionSource toComplete;
@@ -104,7 +110,7 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
             else
             {
                 after = decoded.Value.Sequence;
-                if (after > _head) throw new InvalidCursorException("Cursor is ahead of the log.");
+                if (after > _head) return new EventReadResult([], headCursor, true, false);
                 if (after < floor) { truncated = true; after = floor; }
             }
 
@@ -114,6 +120,9 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
                 : null;
             var matcher = matchDef?.Matches;
 
+            // Without NewestFirst only the first MaxEvents+1 matches matter (the extra one proves HasMore). Keep scanning
+            // past that only while an age-skip could still flip Truncated.
+            var canStopEarly = !query.NewestFirst;
             var matches = new List<EventEnvelope>();
             var first = floor + 1;
             for (var i = (int)(after - first) + 1; i < _events.Count; i++)
@@ -121,8 +130,9 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
                 var e = _events[i];
                 if (cutoff is { } c && e.Timestamp < c) { truncated = true; continue; }
                 if (query.Names is not null && !query.Names.Contains(e.Name)) continue;
-                if (matcher is not null && !matcher(query.Arguments, e.Data)) continue;
+                if (matcher is not null && !matcher((JsonObject?)query.Arguments?.DeepClone(), (JsonObject)e.Data.DeepClone())) continue;
                 matches.Add(e);
+                if (canStopEarly && matches.Count > query.MaxEvents && (cutoff is null || truncated)) break;
             }
 
             IEnumerable<EventEnvelope> page;
@@ -145,13 +155,18 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
         }
     }
 
-    public Task WaitForEventsAfterAsync(long afterSequence, CancellationToken cancellationToken)
+    public async Task WaitForEventsAfterAsync(long afterSequence, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_gate)
+        while (true)
         {
-            if (_head > afterSequence) return Task.CompletedTask;
-            return _signal.Task.WaitAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            Task signal;
+            lock (_gate)
+            {
+                if (_head > afterSequence) return;
+                signal = _signal.Task;
+            }
+            await signal.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
