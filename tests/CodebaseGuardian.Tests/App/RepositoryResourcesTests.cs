@@ -59,4 +59,33 @@ public class RepositoryResourcesTests
         Assert.Equal(20, commits.GetArrayLength());
         Assert.Equal("c21", commits[0].GetProperty("subject").GetString());
     }
+
+    [Fact]
+    public async Task Recent_commits_resource_emits_committed_at_as_utc_with_z()
+    {
+        using var repo = TempGitRepo.Create();
+        repo.WriteFile("a.txt", "a");
+        repo.CommitAt("zoned", "2026-01-02T03:04:05+02:00");
+        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+
+        var read = await server.Client.ReadResourceAsync("guardian://repo/commits/recent", cancellationToken: Ct);
+
+        var text = Assert.IsType<TextResourceContents>(Assert.Single(read.Contents));
+        using var json = JsonDocument.Parse(text.Text);
+        Assert.Equal("2026-01-02T01:04:05.000Z",
+            json.RootElement.GetProperty("commits")[0].GetProperty("committedAt").GetString());
+    }
+
+    [Fact]
+    public async Task Status_resource_on_unborn_repository_has_no_head_sha()
+    {
+        using var repo = TempGitRepo.Create();
+        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+
+        var read = await server.Client.ReadResourceAsync("guardian://repo/status", cancellationToken: Ct);
+
+        var text = Assert.IsType<TextResourceContents>(Assert.Single(read.Contents));
+        using var json = JsonDocument.Parse(text.Text);
+        Assert.False(json.RootElement.TryGetProperty("headSha", out var head) && head.ValueKind != JsonValueKind.Null);
+    }
 }

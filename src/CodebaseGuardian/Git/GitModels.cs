@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using CodebaseGuardian.Json;
+
 namespace CodebaseGuardian.Git;
 
 /// <summary>Kind is one of "added", "modified", "deleted", "renamed", "copied", "type-changed", "unmerged".</summary>
@@ -19,7 +22,7 @@ public sealed record CommitInfo(
     string ShortSha,
     string AuthorName,
     string AuthorEmail,
-    DateTimeOffset CommittedAt,
+    [property: JsonConverter(typeof(UtcTimestampJsonConverter))] DateTimeOffset CommittedAt,
     string Subject,
     IReadOnlyList<string> ParentShas);
 

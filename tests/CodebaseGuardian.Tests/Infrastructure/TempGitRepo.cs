@@ -77,9 +77,28 @@ public sealed class TempGitRepo : IDisposable
     }
 
     /// <summary>Runs <c>git</c> in the repository and returns its trimmed standard output; throws with standard error on failure.</summary>
-    public string Git(params string[] args)
+    public string Git(params string[] args) => GitWithEnvironment(null, args);
+
+    /// <summary>Stages everything and commits with the given committer date (any ISO 8601 offset), returning the full SHA.</summary>
+    public string CommitAt(string message, string committerDate)
     {
-        using var process = Process.Start(CreateStartInfo(args))
+        Git("add", "-A");
+        GitWithEnvironment(new Dictionary<string, string> { ["GIT_COMMITTER_DATE"] = committerDate }, "commit", "-m", message);
+        return Git("rev-parse", "HEAD");
+    }
+
+    private string GitWithEnvironment(IReadOnlyDictionary<string, string>? environment, params string[] args)
+    {
+        var startInfo = CreateStartInfo(args);
+        if (environment is not null)
+        {
+            foreach (var (name, value) in environment)
+            {
+                startInfo.Environment[name] = value;
+            }
+        }
+
+        using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("The git process could not be started.");
         process.StandardInput.Close();
 

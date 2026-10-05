@@ -75,6 +75,19 @@ public class RepositoryToolsTests
     }
 
     [Fact]
+    public async Task Recent_commits_emits_committed_at_as_utc_with_z()
+    {
+        using var repo = TempGitRepo.Create();
+        repo.WriteFile("a.txt", "a");
+        repo.CommitAt("zoned", "2026-01-02T03:04:05+02:00");
+        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+
+        var result = await CallAsync(server, "recent_commits");
+
+        Assert.Equal("2026-01-02T01:04:05.000Z", Commits(result)[0].GetProperty("committedAt").GetString());
+    }
+
+    [Fact]
     public async Task Recent_commits_clamps_limit_to_100()
     {
         using var repo = TempGitRepo.Create();
