@@ -37,3 +37,9 @@ Task 2: minor (deferred): `ListFilesAsync` reuses the 16 MB numstat cap and igno
 Task 2: minor (deferred): `GitRepository.RootPath` resolves sync-over-async on first access (CancellationToken.None, 120 s timeout).
 Task 2: minor (deferred): `ProcessRunner` output capped mid-UTF-8 character decodes to U+FFFD (patches already cut on a boundary).
 Task 2: minor (deferred): subdirectory `RootPath` test compares `Path.GetFullPath`, which fails on macOS where the temp dir is a symlink; compare real paths.
+Task 3: complete (commits bfdb9b4..e0aeb5e, review clean after 1 fix round; suite 99/99)
+Ruling (T3): commit timestamps go on the wire through the shared `CodebaseGuardian.Json.UtcTimestampJsonConverter` (UTC, `yyyy-MM-ddTHH:mm:ss.fffZ`), applied by attribute on model properties; later tasks that emit timestamps reuse it — the global constraint binds and no later task defines a converter — if wrong: swap the attribute for serializer-wide options.
+Ruling (T3): null properties (e.g. `headSha` on an unborn repo) are omitted from tool structured content and resource JSON, not emitted as `null`, and `recent_commits` returns `{commits:[...]}` — the SDK omits nulls, structured content must be an object, and the spec names no shape — if wrong: one serializer option and a wrapper rename.
+Task 3: minor (deferred): `committedAt` now has an unconstrained (`{}`) schema in `recent_commits`' outputSchema because of the property-level converter; a schema transform could restore `type: string, format: date-time`.
+Task 3: minor (deferred): `ToolErrors` messages from `ArgumentException` keep the "(Parameter 'x')" suffix.
+Task 3: minor (deferred): the resource serializer options duplicate the SDK's tool serialization; a parity test would catch drift.
