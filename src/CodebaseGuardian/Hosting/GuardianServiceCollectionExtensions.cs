@@ -2,6 +2,12 @@ using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using CodebaseGuardian.Git;
+using CodebaseGuardian.Processes;
+using CodebaseGuardian.Resources;
+using CodebaseGuardian.Tools;
+using CodebaseGuardian.Watching;
+using Mcp.Events;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -31,14 +37,24 @@ public static class GuardianServiceCollectionExtensions
             .PostConfigure(options => options.RepositoryPath = ToFullPath(options.RepositoryPath))
             .ValidateOnStart();
 
+        services.AddSingleton<IProcessRunner, ProcessRunner>();
+        services.AddSingleton<IGitRepository, GitRepository>();
+
         // Instructions are composed when McpServerOptions are first built, so contributors that are
         // registered after this call (by tests, or by features added later) are included.
         services.AddSingleton<IInstructionsContributor, GuardianInstructions>();
         services.AddOptions<McpServerOptions>().Configure<IEnumerable<IInstructionsContributor>>(
             (options, contributors) => options.ServerInstructions = GuardianInstructions.Compose(contributors));
 
-        return services.AddMcpServer(options =>
-            options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion });
+        // The watcher does nothing unless Guardian:WatchEnabled is set.
+        services.AddHostedService<RepositoryWatcher>();
+
+        return services
+            .AddMcpServer(options => options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion })
+            .WithEvents(GuardianEvents.Register)
+            .WithTools<RepositoryTools>()
+            .WithTools<EventTools>()
+            .WithResources<RepositoryResources>();
     }
 
     // Empty values are left for validation to report; GetFullPath would throw for them.

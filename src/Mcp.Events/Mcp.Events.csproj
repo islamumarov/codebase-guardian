@@ -4,7 +4,13 @@
   <PropertyGroup>
     <RootNamespace>Mcp.Events</RootNamespace>
     <Description>Server-side MCP Events (draft) for the MCP C# SDK: events/list, events/poll, events/stream, webhook subscriptions.</Description>
+    <!-- McpServerOptions.RequestHandlers (custom JSON-RPC methods) is experimental in SDK 2.2.0. -->
+    <NoWarn>$(NoWarn);MCPEXP002</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodebaseGuardian.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />

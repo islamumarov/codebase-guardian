@@ -4,6 +4,8 @@
   <PropertyGroup>
     <RootNamespace>Mcp.Skills</RootNamespace>
     <Description>Server-side MCP Skills extension (io.modelcontextprotocol/skills) for the MCP C# SDK.</Description>
+    <!-- McpServerOptions.RequestHandlers (custom JSON-RPC methods) is experimental in SDK 2.2.0. -->
+    <NoWarn>$(NoWarn);MCPEXP002</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

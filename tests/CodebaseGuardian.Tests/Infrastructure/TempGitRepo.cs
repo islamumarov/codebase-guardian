@@ -97,9 +97,28 @@ public sealed class TempGitRepo : IDisposable
     }
 
     /// <summary>Runs <c>git</c> in the repository and returns its trimmed standard output; throws with standard error on failure.</summary>
-    public string Git(params string[] args)
+    public string Git(params string[] args) => GitWithEnvironment(null, args);
+
+    /// <summary>Stages everything and commits with the given committer date (any ISO 8601 offset), returning the full SHA.</summary>
+    public string CommitAt(string message, string committerDate)
     {
-        using var process = Process.Start(CreateStartInfo(args))
+        Git("add", "-A");
+        GitWithEnvironment(new Dictionary<string, string> { ["GIT_COMMITTER_DATE"] = committerDate }, "commit", "-m", message);
+        return Git("rev-parse", "HEAD");
+    }
+
+    private string GitWithEnvironment(IReadOnlyDictionary<string, string>? environment, params string[] args)
+    {
+        var startInfo = CreateStartInfo(args);
+        if (environment is not null)
+        {
+            foreach (var (name, value) in environment)
+            {
+                startInfo.Environment[name] = value;
+            }
+        }
+
+        using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("The git process could not be started.");
         process.StandardInput.Close();
 
@@ -195,21 +214,23 @@ public sealed class TempGitRepo : IDisposable
             }
         }
 
-        // Git is steered by GIT_* variables (author and committer, injected configuration, template directory, GIT_DIR, ...)
-        // and new ones appear with new versions: none of the machine's reaches it, whatever its name.
-        foreach (var name in environment.Keys.Where(key => key.StartsWith("GIT_", StringComparison.OrdinalIgnoreCase)).ToList())
+        // Command-scope config (GIT_CONFIG_COUNT/KEY_n/VALUE_n, GIT_CONFIG_PARAMETERS) outranks
+        // local config, so it must not leak into the hermetic repo.
+        foreach (var key in startInfo.Environment.Keys.ToList())
         {
-            environment.Remove(name);
+            if (key.StartsWith("GIT_CONFIG_KEY_", StringComparison.OrdinalIgnoreCase)
+                || key.StartsWith("GIT_CONFIG_VALUE_", StringComparison.OrdinalIgnoreCase))
+            {
+                startInfo.Environment.Remove(key);
+            }
         }
 
-        // Git reads the user-level configuration, ignore and attributes files from under HOME and XDG_CONFIG_HOME; an empty
-        // directory has none, and unlike GIT_CONFIG_GLOBAL this works for every git version and every kind of file.
-        environment["HOME"] = _home;
-        environment["XDG_CONFIG_HOME"] = _home;
-        environment["USERPROFILE"] = _home;
-        environment["GIT_CONFIG_NOSYSTEM"] = "1"; // no system-level configuration either
-        environment["GIT_TERMINAL_PROMPT"] = "0";
-        environment["LC_ALL"] = "C"; // git's messages stay in English
+        startInfo.Environment.Remove("GIT_CONFIG_COUNT");
+        startInfo.Environment.Remove("GIT_CONFIG_PARAMETERS");
+
+        startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
+        startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
+        startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
         return startInfo;
     }
 }

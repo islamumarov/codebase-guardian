@@ -30,15 +30,14 @@ mkdir -p .superpowers/sdd/BACKLOG && printf '*\n' > .superpowers/sdd/.gitignore
 date -u +%s > .superpowers/sdd/BACKLOG/run-start
 ```
 
-**.NET.** `global.json` pins SDK `11.0.100-rc.1.26425.128` (roll-forward `latestFeature`). Projects target `net10.0`, so tests also need the .NET 10 runtimes. If `dotnet --list-sdks` lacks either, install both:
+**.NET.** `global.json` pins SDK `10.0.100` (roll-forward `latestFeature`) and projects target `net10.0`. Cloud egress blocks `builds.dotnet.microsoft.com` (so `dotnet-install.sh` fails), but the Ubuntu archive is reachable. If `dotnet --list-sdks` shows no 10.0 SDK, install it from apt:
 
 ```bash
-curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-bash /tmp/dotnet-install.sh --version 11.0.100-rc.1.26425.128 --install-dir "$HOME/.dotnet"
-bash /tmp/dotnet-install.sh --channel 10.0 --install-dir "$HOME/.dotnet"
+sudo -n true 2>/dev/null && SUDO=sudo || SUDO=
+$SUDO apt-get update -qq && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq dotnet-sdk-10.0
 ```
 
-Every later command needs `export DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH"` in the same shell call, and every subagent dispatch must say so too. If installation fails, stop and report the error. Release the lock if you hold it.
+That installs to `/usr/lib/dotnet` and puts `dotnet` on PATH, so no exports are needed. On machines with a `$HOME/.dotnet` install instead, every command needs `export DOTNET_ROOT="$HOME/.dotnet" PATH="$HOME/.dotnet:$PATH"` in the same shell call, and every subagent dispatch must say so too. If installation fails, stop and report the error. Release the lock if you hold it.
 
 **Baseline.** Acquire the lock (section 3), then run `dotnet test` at the repo root.
 - If it fails, run it once more.
