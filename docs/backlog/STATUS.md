@@ -55,3 +55,11 @@ Task 5: minor (deferred): the skills `resources/list` filter appends skill entri
 Task 5: minor (deferred): calling `WithSkills` twice registers the handlers twice; use `TryAddEnumerable` or throw.
 Task 5: minor (deferred): `SkillJson.Cacheable` moves nodes between objects just to order keys; build the result directly.
 Task 5: minor (deferred): no tests for `resources/read` on a directory URI (-32602), for `ttlMs`/`cacheScope` on the blob path, or for `resultType` on `resources/read`.
+Task 6: complete (commits 1dde25a..7149b41, review clean after 1 fix round; suite 224/224)
+Ruling (T6): a same-epoch cursor ahead of the head is a gap (`Truncated=true`, head cursor, no events), not an error; `InvalidCursorException` is only for undecodable cursors — wire-format B11 makes `truncated` the single gap signal — if wrong: one branch in `InMemoryEventLog.Read`.
+Ruling (T6): supplied event ids starting with the log's generated prefix `evt_<8hex>_` are rejected with `ArgumentException` — otherwise they can collide with generated ids and break dedupe — if wrong: suffix generated ids on collision instead.
+Ruling (T6): `IEventLog.GetSequence` does not check the epoch; stream loops (Task 8) must derive sequences only from cursors returned by `Read` — the class documents this — if wrong: add an epoch check to `GetSequence`.
+Task 6: minor (deferred): the `IEventLog.GetSequence` interface doc lacks the "use cursors returned by Read" caveat (only the class has it) — Task 8 should rely on the class doc.
+Task 6: minor (deferred): `WaitAboveHeadIsNotCompletedByPublishThatDoesNotPassIt` asserts `IsCompleted == false` and could pass against the old code by scheduling luck.
+Task 6: minor (deferred): exceptions from an `EventDefinition.Matches` predicate propagate out of `Read`; Task 7 may wrap them.
+Task 6: minor (deferred): stray indentation at InMemoryEventLog.cs:33.
