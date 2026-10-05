@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using CodebaseGuardian.Checks;
+using CodebaseGuardian.Dependencies;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
@@ -64,6 +65,8 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<ISecretScanner, SecretScanner>();
         services.AddSingleton<IRepositoryChangeHandler, SecretScanCommitHandler>();
 
+        services.AddSingleton<IDependencyAuditor, DependencyAuditor>();
+
         // The watcher does nothing unless Guardian:WatchEnabled is set.
         services.AddHostedService<RepositoryWatcher>();
 
@@ -74,6 +77,7 @@ public static class GuardianServiceCollectionExtensions
             .WithTools<EventTools>()
             .WithTools<CheckTools>()
             .WithTools<SecurityTools>()
+            .WithTools<DependencyTools>()
             .WithResources<RepositoryResources>()
             .WithResources<CheckResources>();
     }

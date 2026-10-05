@@ -30,6 +30,10 @@ public sealed class FakeProcessRunner(IProcessRunner? fallback = null) : IProces
     public FakeProcessRunner OnBlocking(Func<ProcessSpec, bool> match, TaskCompletionSource<ProcessResult> completion) =>
         Add(match, ct => completion.Task.WaitAsync(ct));
 
+    /// <summary>The call throws <paramref name="exception"/>, for example an <see cref="ExecutableNotFoundException"/>.</summary>
+    public FakeProcessRunner OnThrow(Func<ProcessSpec, bool> match, Exception exception) =>
+        Add(match, _ => Task.FromException<ProcessResult>(exception));
+
     public static ProcessResult Result(int exitCode, string standardOutput = "", string standardError = "", bool timedOut = false) =>
         new(exitCode, standardOutput, standardError, timedOut, false, TimeSpan.FromMilliseconds(5));
 
