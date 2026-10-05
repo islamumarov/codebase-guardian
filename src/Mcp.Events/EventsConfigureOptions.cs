@@ -12,6 +12,7 @@ namespace Mcp.Events;
 internal sealed class EventsConfigureOptions(
     IOptions<EventsOptions> eventsOptions,
     IEventLog log,
+    WebhookSubscribeHandler webhooks,
     TimeProvider time,
     ILogger<EventsConfigureOptions>? logger = null,
     IHostApplicationLifetime? lifetime = null)
@@ -31,6 +32,8 @@ internal sealed class EventsConfigureOptions(
         options.RequestHandlers.Add(new McpServerRequestHandler { Method = EventsProtocol.PollMethod, Handler = HandlePoll });
         var stream = new EventStreamHandler(_options, log, time, lifetime, _logger);
         options.RequestHandlers.Add(new McpServerRequestHandler { Method = EventsProtocol.StreamMethod, Handler = stream.HandleAsync });
+        options.RequestHandlers.Add(new McpServerRequestHandler { Method = EventsProtocol.SubscribeMethod, Handler = webhooks.SubscribeAsync });
+        options.RequestHandlers.Add(new McpServerRequestHandler { Method = EventsProtocol.UnsubscribeMethod, Handler = webhooks.UnsubscribeAsync });
     }
 
     private ValueTask<JsonNode?> HandleList(JsonRpcRequest request, CancellationToken cancellationToken) =>

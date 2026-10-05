@@ -434,6 +434,46 @@ public class InMemoryEventLogTests
         Assert.Equal(Enumerable.Range(1, 200).Select(i => (long)i), r.Events.Select(e => e.Sequence));
     }
 
+    [Fact]
+    public async Task Seek_with_no_cursor_is_the_head_and_CursorAt_round_trips()
+    {
+        var log = NewLog();
+        await Pub(log);
+        await Pub(log);
+
+        Assert.Equal((2L, false), log.Seek(null, null));
+        Assert.Equal(log.HeadCursor, log.CursorAt(2));
+        Assert.Equal(1, log.GetSequence(log.CursorAt(1)));
+    }
+
+    [Fact]
+    public async Task Seek_follows_the_Read_truncation_rules()
+    {
+        var log = NewLog(capacity: 2);
+        var start = log.HeadCursor;
+        for (var i = 0; i < 4; i++) await Pub(log);
+
+        Assert.Equal((2L, true), log.Seek(start, null));                                         // evicted: oldest retained
+        Assert.Equal((3L, false), log.Seek(log.CursorAt(3), null));                              // in window
+        Assert.Equal((4L, true), log.Seek(log.CursorAt(99), null));                              // ahead of the head: a gap
+        Assert.Equal((2L, true), log.Seek(EventCursor.Encode(Guid.NewGuid(), 4), null));         // foreign epoch
+        Assert.Throws<InvalidCursorException>(() => log.Seek("not-a-cursor", null));
+    }
+
+    [Fact]
+    public async Task Seek_skips_events_older_than_maxAge_and_reports_the_gap()
+    {
+        var log = NewLog();
+        var start = log.HeadCursor;
+        await Pub(log, ts: _time.GetUtcNow() - TimeSpan.FromMinutes(10));
+        await Pub(log, ts: _time.GetUtcNow() - TimeSpan.FromMinutes(9));
+        await Pub(log, ts: _time.GetUtcNow() - TimeSpan.FromSeconds(5));
+
+        Assert.Equal((2L, true), log.Seek(start, TimeSpan.FromMinutes(1)));
+        Assert.Equal((0L, false), log.Seek(start, TimeSpan.FromHours(1)));
+        Assert.Equal((3L, false), log.Seek(null, TimeSpan.FromMinutes(1)));
+    }
+
     private static Guid EpochOf(InMemoryEventLog log) => EventCursor.Decode(log.HeadCursor).Epoch;
 
     [Fact]

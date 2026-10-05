@@ -18,6 +18,9 @@ public sealed partial class EventsOptions
     /// <summary>Epic 2; adds "webhook" to the advertised delivery modes (ruling R5).</summary>
     public bool WebhooksEnabled { get; set; }
 
+    /// <summary>Webhook subscription and delivery settings (used when <see cref="WebhooksEnabled"/> is set).</summary>
+    public WebhookOptions Webhooks { get; } = new();
+
     /// <summary>Resolves the authenticated principal of a request; <see langword="null"/> for anonymous requests.</summary>
     public Func<JsonRpcRequest, string?> PrincipalResolver { get; set; } = EventsPrincipal.FromRequest;
 

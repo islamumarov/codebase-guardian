@@ -156,6 +156,21 @@ public sealed class HttpAuthTests : IDisposable
         Assert.Contains("Guardian:Http:ApiKeys", exception.Message);
     }
 
+    [Fact]
+    public async Task Two_principals_sharing_one_key_fail_startup_naming_the_setting_and_principals_but_not_the_key()
+    {
+        var exception = await Assert.ThrowsAnyAsync<Exception>(() => StartAsync(new Dictionary<string, string?>
+        {
+            ["Guardian:Http:ApiKeys:alice"] = Key,
+            ["Guardian:Http:ApiKeys:bob"] = Key,
+        }));
+
+        Assert.Contains("Guardian:Http:ApiKeys", exception.Message);
+        Assert.Contains("alice", exception.Message);
+        Assert.Contains("bob", exception.Message);
+        Assert.DoesNotContain(Key, exception.Message);
+    }
+
     [Theory]
     [InlineData("--urls=http://0.0.0.0:0")]
     [InlineData("--urls=http://127.0.0.1:0;http://0.0.0.0:0")]

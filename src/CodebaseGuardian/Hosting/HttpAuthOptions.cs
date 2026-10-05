@@ -32,6 +32,12 @@ internal sealed partial class HttpAuthOptionsValidator : IValidateOptions<HttpAu
             }
         }
 
+        foreach (var group in options.ApiKeys.Where(p => !string.IsNullOrEmpty(p.Value)).GroupBy(p => p.Value, StringComparer.Ordinal).Where(g => g.Count() > 1))
+        {
+            var principals = string.Join(", ", group.Select(p => $"'{p.Key}'").Order(StringComparer.Ordinal));
+            failures.Add($"Guardian:Http:ApiKeys principals {principals} share the same API key; give each principal its own key.");
+        }
+
         return failures.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
     }
 

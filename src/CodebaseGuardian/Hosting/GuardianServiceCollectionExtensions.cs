@@ -90,6 +90,8 @@ public static class GuardianServiceCollectionExtensions
             .WithEvents(options =>
             {
                 options.WebhooksEnabled = WebhooksEnabled(configuration);
+                options.Webhooks.AllowInsecureLoopback =
+                    (configuration.GetSection(WebhookHostingOptions.SectionName).Get<WebhookHostingOptions>() ?? new WebhookHostingOptions()).AllowInsecureLoopback;
                 GuardianEvents.Register(options);
                 if (GitHubEnabled(configuration))
                 {
