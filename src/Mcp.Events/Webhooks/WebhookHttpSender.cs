@@ -32,7 +32,7 @@ public sealed class WebhookHttpSender : IWebhookSender, IDisposable
             ConnectTimeout = options.RequestTimeout,
             ConnectCallback = ConnectAsync,
         };
-        _client = new HttpClient(handler, disposeHandler: true) { Timeout = options.RequestTimeout };
+        _client = new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
     public async Task<WebhookSendResult> SendAsync(Uri url, string messageId, ReadOnlyMemory<byte> body, string subscriptionId,
@@ -49,13 +49,17 @@ public sealed class WebhookHttpSender : IWebhookSender, IDisposable
         request.Headers.TryAddWithoutValidation("webhook-signature", WebhookSigner.Sign(messageId, timestamp, body.Span, keys));
         request.Headers.TryAddWithoutValidation("X-MCP-Subscription-Id", subscriptionId);
 
+        // One deadline covers connecting, the headers and the body read, so an endpoint cannot stall the caller by
+        // sending headers and then nothing.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_options.RequestTimeout);
         try
         {
-            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             var status = (int)response.StatusCode;
             if (status is >= 200 and < 300)
             {
-                return new WebhookSendResult(true, status, null, await ReadBodyAsync(response, cancellationToken).ConfigureAwait(false));
+                return new WebhookSendResult(true, status, null, await ReadBodyAsync(response, deadline.Token).ConfigureAwait(false));
             }
 
             return new WebhookSendResult(false, status, status >= 500 ? "http_5xx" : "http_4xx", null);

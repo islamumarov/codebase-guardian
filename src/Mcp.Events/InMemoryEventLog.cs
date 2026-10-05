@@ -72,13 +72,12 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
 
             if (maxAge is { } age)
             {
+                // Skip only the contiguous prefix of too-old events, so Seek never passes an event Read would return.
                 var cutoff = _time.GetUtcNow() - age;
-                for (var i = _events.Count - 1; i >= 0 && _events[i].Sequence > after; i--)
+                for (var i = (int)(after - floor); i < _events.Count && _events[i].Timestamp < cutoff; i++)
                 {
-                    if (_events[i].Timestamp >= cutoff) continue;
-                    after = _events[i].Sequence; // everything up to the newest too-old event is skipped
+                    after = _events[i].Sequence;
                     truncated = true;
-                    break;
                 }
             }
 

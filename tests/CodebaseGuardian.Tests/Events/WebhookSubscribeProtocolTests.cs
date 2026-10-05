@@ -241,6 +241,48 @@ public sealed class WebhookSubscribeProtocolTests
     }
 
     [Fact]
+    public async Task A_challenge_reply_with_duplicate_keys_fails_verification()
+    {
+        await using var receiver = await WebhookReceiver.StartAsync(Ct);
+        receiver.ChallengeReply = nonce => $$$"""{"challenge":"{{{nonce}}}","challenge":"{{{nonce}}}"}""";
+        await using var server = await StartAsync();
+
+        var ex = await SubscribeErrorAsync(server, SubscribeParams(receiver));
+
+        Assert.Equal(-32015, Code(ex));
+        Assert.Equal("challenge_failed", ex.Data["reason"]);
+    }
+
+    [Fact]
+    public async Task Unsubscribing_the_last_subscription_for_a_url_forgets_its_verification()
+    {
+        await using var receiver = await WebhookReceiver.StartAsync(Ct);
+        await using var server = await StartAsync();
+        await SubscribeAsync(server, SubscribeParams(receiver));
+        await server.RequestAsync("events/unsubscribe",
+            Obj($$$"""{"name":"test.alpha","arguments":{"branch":"main"},"delivery":{"url":"{{{receiver.Url}}}"}}"""), Ct);
+
+        await SubscribeAsync(server, SubscribeParams(receiver));
+
+        Assert.Equal(2, receiver.Received.Count);
+    }
+
+    [Fact]
+    public async Task Changed_is_raised_after_the_store_lock_is_released()
+    {
+        await using var receiver = await WebhookReceiver.StartAsync(Ct);
+        await using var server = await StartAsync();
+        var store = (WebhookSubscriptionStore)server.Services.GetService(typeof(WebhookSubscriptionStore))!;
+        var heldLock = new List<bool>();
+        store.Changed += _ => heldLock.Add(System.Threading.Monitor.IsEntered(store.SyncRoot));
+
+        await SubscribeAsync(server, SubscribeParams(receiver));   // add
+        await SubscribeAsync(server, SubscribeParams(receiver));   // refresh
+
+        Assert.Equal([false, false], heldLock);
+    }
+
+    [Fact]
     public async Task A_failed_verification_is_not_cached()
     {
         await using var receiver = await WebhookReceiver.StartAsync(Ct);

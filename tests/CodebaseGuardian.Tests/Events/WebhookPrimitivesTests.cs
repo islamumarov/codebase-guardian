@@ -171,6 +171,38 @@ public sealed class WebhookPrimitivesTests
         Assert.False(WebhookUrlPolicy.TryValidate("https://h/" + new string('a', 2048), false, out _, out _));
 
     [Fact]
+    public async Task Sender_times_out_when_the_body_stalls_after_the_headers()
+    {
+        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var server = Task.Run(async () =>
+            {
+                using var client = await listener.AcceptTcpClientAsync(Ct);
+                var stream = client.GetStream();
+                Assert.True(await stream.ReadAsync(new byte[4096], Ct) > 0);
+                await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"), Ct);
+                await Task.Delay(TimeSpan.FromSeconds(30), Ct).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            }, Ct);
+            var options = new WebhookOptions { AllowInsecureLoopback = true, RequestTimeout = TimeSpan.FromMilliseconds(500) };
+            using var sender = new WebhookHttpSender(options);
+
+            var started = DateTimeOffset.UtcNow;
+            var result = await sender.SendAsync(new Uri($"http://127.0.0.1:{port}/hook"), "msg_1", "{}"u8.ToArray(), "sub_x", [new byte[32]], Ct);
+
+            Assert.False(result.Delivered);
+            Assert.Equal("timeout", result.ErrorCategory);
+            Assert.True(DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [Fact]
     public async Task Sender_refuses_a_host_that_resolves_to_a_private_address_without_any_connection()
     {
         var resolved = new List<string>();

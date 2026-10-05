@@ -474,6 +474,22 @@ public class InMemoryEventLogTests
         Assert.Equal((3L, false), log.Seek(null, TimeSpan.FromMinutes(1)));
     }
 
+    [Fact]
+    public async Task Seek_with_out_of_order_timestamps_never_passes_an_event_Read_would_return()
+    {
+        var log = NewLog();
+        var start = log.HeadCursor;
+        await Pub(log, ts: _time.GetUtcNow() - TimeSpan.FromMinutes(10));   // too old
+        await Pub(log, ts: _time.GetUtcNow() - TimeSpan.FromSeconds(5));    // fresh
+        await Pub(log, ts: _time.GetUtcNow() - TimeSpan.FromMinutes(10));   // too old, but after a fresh one
+        var age = TimeSpan.FromMinutes(1);
+
+        var seek = log.Seek(start, age);
+
+        Assert.Equal((1L, true), seek);
+        Assert.Equal(2L, log.Read(Q(start, maxAge: age)).Events[0].Sequence);
+    }
+
     private static Guid EpochOf(InMemoryEventLog log) => EventCursor.Decode(log.HeadCursor).Epoch;
 
     [Fact]

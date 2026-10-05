@@ -40,7 +40,7 @@ public sealed class WebhookEndToEndTests : IDisposable
 
         var result = (JsonObject)response.Result!;
         Assert.Matches("^sub_[0-9a-f]{16}$", result["id"]!.GetValue<string>());
-        var verification = await receiver.WaitForAsync(r => r.Headers.ContainsKey("webhook-signature"), TimeSpan.FromSeconds(10));
+        var verification = await receiver.WaitForAsync(r => r.Headers.ContainsKey("webhook-signature"), TimeSpan.FromSeconds(10), Ct);
         Assert.Equal("verification", verification.Json["type"]!.GetValue<string>());
         Assert.True(WebhookSecret.TryParse(receiver.Secret, out var secret));
         Assert.True(WebhookReceiver.SignatureValid(verification, secret));

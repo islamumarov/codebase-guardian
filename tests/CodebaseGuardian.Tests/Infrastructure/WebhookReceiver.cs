@@ -31,6 +31,9 @@ public sealed class WebhookReceiver : IAsyncDisposable
     /// <summary>Replies <c>{"challenge": nonce}</c> to verification envelopes.</summary>
     public bool EchoChallenges { get; set; } = true;
 
+    /// <summary>When set, replaces the challenge reply body; receives the nonce.</summary>
+    public Func<string, string>? ChallengeReply { get; set; }
+
     /// <summary>Status code to answer with; default 200.</summary>
     public Func<ReceivedWebhook, int>? StatusFor { get; set; }
 
@@ -57,7 +60,7 @@ public sealed class WebhookReceiver : IAsyncDisposable
         return receiver;
     }
 
-    public async Task<ReceivedWebhook> WaitForAsync(Func<ReceivedWebhook, bool> match, TimeSpan timeout)
+    public async Task<ReceivedWebhook> WaitForAsync(Func<ReceivedWebhook, bool> match, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (true)
@@ -69,7 +72,7 @@ public sealed class WebhookReceiver : IAsyncDisposable
             }
 
             if (DateTimeOffset.UtcNow >= deadline) throw new TimeoutException("No matching webhook request arrived.");
-            await Task.Delay(20);
+            await Task.Delay(20, cancellationToken);
         }
     }
 
@@ -108,7 +111,8 @@ public sealed class WebhookReceiver : IAsyncDisposable
         if (EchoChallenges && TryChallenge(request, out var nonce))
         {
             context.Response.ContentType = "application/json";
-            await context.Response.WriteAsync(new JsonObject { ["challenge"] = nonce }.ToJsonString(), context.RequestAborted);
+            var reply = ChallengeReply?.Invoke(nonce!) ?? new JsonObject { ["challenge"] = nonce }.ToJsonString();
+            await context.Response.WriteAsync(reply, context.RequestAborted);
         }
     }
 

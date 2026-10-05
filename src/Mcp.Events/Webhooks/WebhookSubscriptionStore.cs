@@ -25,6 +25,21 @@ public sealed class WebhookSubscriptionStore
         Changed?.Invoke(subscription);
     }
 
+    /// <summary>Adds unless the id exists or the principal is at <paramref name="maxPerPrincipal"/>; raises <see cref="Changed"/> after releasing the lock.</summary>
+    internal WebhookAddResult TryAdd(WebhookSubscription subscription, int maxPerPrincipal)
+    {
+        ArgumentNullException.ThrowIfNull(subscription);
+        lock (SyncRoot)
+        {
+            if (_byId.ContainsKey(subscription.Id)) return WebhookAddResult.Exists;
+            if (_byId.Values.Count(s => s.Principal == subscription.Principal) >= maxPerPrincipal) return WebhookAddResult.LimitReached;
+            _byId[subscription.Id] = subscription;
+        }
+
+        Changed?.Invoke(subscription);
+        return WebhookAddResult.Added;
+    }
+
     public bool Remove(string id)
     {
         WebhookSubscription? removed;
@@ -54,3 +69,5 @@ public sealed class WebhookSubscriptionStore
         Changed?.Invoke(subscription);
     }
 }
+
+internal enum WebhookAddResult { Added, Exists, LimitReached }

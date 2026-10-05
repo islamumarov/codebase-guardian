@@ -60,78 +60,91 @@ internal sealed class WebhookSubscribeHandler(
         }
 
         var now = time.GetUtcNow();
-        var result = new JsonObject { ["resultType"] = EventJson.ResultTypeComplete, ["id"] = id };
-        lock (store.SyncRoot)
+        while (true)
         {
-            WebhookSubscription subscription;
-            bool truncated;
-            JsonObject? status = null;
+            // Mutation happens under the store lock; Changed is raised after it is released.
             if (store.TryGet(id, out var existing))
             {
-                subscription = existing;
-                if (!CryptographicOperations.FixedTimeEquals(existing.Secret, secret))
+                bool truncated = false;
+                JsonObject status;
+                long position;
+                DateTimeOffset refreshBefore;
+                DateTimeOffset? failedSince;
+                lock (store.SyncRoot)
                 {
-                    existing.PreviousSecret = existing.Secret;
-                    existing.PreviousSecretExpiresAt = now + _webhooks.SecretRotationGrace;
-                    existing.Secret = secret;
-                }
-
-                truncated = false;
-                if (parsed.Cursor is not null)
-                {
-                    var (sequence, gap) = log.Seek(parsed.Cursor, parsed.MaxAge);
-                    if (sequence > existing.Position)
+                    if (!CryptographicOperations.FixedTimeEquals(existing.Secret, secret))
                     {
-                        existing.Position = sequence;
-                        truncated = gap;
+                        existing.PreviousSecret = existing.Secret;
+                        existing.PreviousSecretExpiresAt = now + _webhooks.SecretRotationGrace;
+                        existing.Secret = secret;
                     }
+
+                    if (parsed.Cursor is not null)
+                    {
+                        var (sequence, gap) = log.Seek(parsed.Cursor, parsed.MaxAge);
+                        if (sequence > existing.Position)
+                        {
+                            existing.Position = sequence;
+                            truncated = gap;
+                        }
+                    }
+
+                    existing.Active = true;
+                    existing.RefreshBefore = now + grant;
+                    status = DeliveryStatus(existing);
+                    position = existing.Position;
+                    refreshBefore = existing.RefreshBefore;
+                    failedSince = existing.FailedSince;
                 }
 
-                existing.Active = true;
-                status = DeliveryStatus(existing);
-            }
-            else
-            {
-                ThrowIfAtLimit(principal);
-                var (sequence, gap) = log.Seek(parsed.Cursor, parsed.MaxAge);
-                truncated = gap;
-                subscription = new WebhookSubscription
+                store.NotifyChanged(existing);
+                var refreshed = Result(id, refreshBefore, position, truncated);
+                refreshed["deliveryStatus"] = status;
+                if (failedSince is { } since)
                 {
-                    Id = id,
-                    Principal = principal,
-                    Url = url,
-                    Name = parsed.Definition.Name,
-                    Arguments = (JsonObject?)parsed.Arguments?.DeepClone() ?? new JsonObject(),
-                    Secret = secret,
-                    Position = sequence,
-                };
-            }
-
-            subscription.RefreshBefore = now + grant;
-            result["refreshBefore"] = EventJson.FormatTimestamp(subscription.RefreshBefore);
-            result["cursor"] = log.CursorAt(subscription.Position);
-            result["truncated"] = truncated;
-            if (status is not null)
-            {
-                result["deliveryStatus"] = status;
-                if (subscription.FailedSince is { } failedSince)
-                {
-                    result["failedSince"] = EventJson.FormatTimestamp(failedSince);
+                    refreshed["failedSince"] = EventJson.FormatTimestamp(since);
                 }
+
+                return refreshed;
             }
 
-            if (existing is null)
+            var (start, startGap) = log.Seek(parsed.Cursor, parsed.MaxAge);
+            var created = new WebhookSubscription
             {
-                store.Add(subscription);
-            }
-            else
+                Id = id,
+                Principal = principal,
+                Url = url,
+                Name = parsed.Definition.Name,
+                Arguments = (JsonObject?)parsed.Arguments?.DeepClone() ?? new JsonObject(),
+                Secret = secret,
+                Position = start,
+                RefreshBefore = now + grant,
+            };
+            switch (store.TryAdd(created, _webhooks.MaxSubscriptionsPerPrincipal))
             {
-                store.NotifyChanged(subscription);
+                case WebhookAddResult.Added:
+                    return Result(id, created.RefreshBefore, start, startGap);
+                case WebhookAddResult.LimitReached:
+                    throw LimitError();
+                // WebhookAddResult.Exists: a concurrent subscribe created it first; refresh that one.
             }
         }
-
-        return result;
     }
+
+    private JsonObject Result(string id, DateTimeOffset refreshBefore, long position, bool truncated) => new()
+    {
+        ["resultType"] = EventJson.ResultTypeComplete,
+        ["id"] = id,
+        ["refreshBefore"] = EventJson.FormatTimestamp(refreshBefore),
+        ["cursor"] = log.CursorAt(position),
+        ["truncated"] = truncated,
+    };
+
+    private McpProtocolException LimitError() =>
+        new("Subscription limit reached.", (McpErrorCode)EventsProtocol.ResourceExhausted)
+        {
+            Data = { ["limit"] = "subscriptions", ["max"] = _webhooks.MaxSubscriptionsPerPrincipal },
+        };
 
     public ValueTask<JsonNode?> UnsubscribeAsync(JsonRpcRequest request, CancellationToken cancellationToken)
     {
@@ -156,7 +169,15 @@ internal sealed class WebhookSubscribeHandler(
             throw InvalidParams("params.delivery.url must be a string.");
         }
 
-        if (!store.Remove(SubscriptionKey.ComputeId(principal, url, name, arguments)))
+        if (store.Remove(SubscriptionKey.ComputeId(principal, url, name, arguments)))
+        {
+            // The pair is no longer in use: forget its verification so a later subscribe proves the endpoint again.
+            if (!store.Snapshot().Any(x => x.Principal == principal && x.Url.OriginalString == url))
+            {
+                lock (_verifiedGate) _verified.Remove((principal, url));
+            }
+        }
+        else
         {
             throw new McpProtocolException("No such subscription.", (McpErrorCode)EventsProtocol.NotFound)
             {
@@ -217,10 +238,7 @@ internal sealed class WebhookSubscribeHandler(
     {
         if (store.CountFor(principal) >= _webhooks.MaxSubscriptionsPerPrincipal)
         {
-            throw new McpProtocolException("Subscription limit reached.", (McpErrorCode)EventsProtocol.ResourceExhausted)
-            {
-                Data = { ["limit"] = "subscriptions", ["max"] = _webhooks.MaxSubscriptionsPerPrincipal },
-            };
+            throw LimitError();
         }
     }
 
@@ -261,9 +279,9 @@ internal sealed class WebhookSubscribeHandler(
                 && obj["challenge"] is JsonValue v && v.GetValueKind() == JsonValueKind.String
                 && CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(v.GetValue<string>()), Encoding.UTF8.GetBytes(nonce));
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or ArgumentException)
         {
-            return false;
+            return false; // malformed, or duplicate keys
         }
     }
 
