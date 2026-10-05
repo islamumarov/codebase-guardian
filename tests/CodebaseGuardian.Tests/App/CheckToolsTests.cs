@@ -212,6 +212,45 @@ public class CheckToolsTests
     }
 
     [Fact]
+    public async Task Auto_checks_do_not_stall_the_watcher_while_a_check_is_running()
+    {
+        using var repo = SolutionRepo();
+        var release = new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fake = new FakeProcessRunner(new ProcessRunner()).OnBlocking(s => s.FileName == "dotnet", release);
+        await using var server = await StartAsync(repo, fake, new()
+        {
+            ["Guardian:AutoChecks"] = "true",
+            ["Guardian:WatchEnabled"] = "true",
+            ["Guardian:WatchIntervalMs"] = "100",
+        });
+        var cursor = await EventsPolling.GetCursorAsync(server, Ct);
+
+        repo.WriteFile("a.txt", "a");
+        repo.Commit("one");
+        await WaitUntilAsync(() => fake.Calls.Count(c => c.FileName == "dotnet") == 1);
+
+        // The first check is still blocked; the next commit must be announced regardless.
+        repo.WriteFile("b.txt", "b");
+        var second = repo.Commit("two");
+        await EventsPolling.WaitForAsync(server, "repo.commit.created", cursor, d => (string?)d["sha"] == second, EventsPolling.DefaultTimeout, Ct);
+        Assert.Equal(1, fake.Calls.Count(c => c.FileName == "dotnet"));
+
+        release.SetResult(FakeProcessRunner.Result(0));
+        var store = server.Services.GetRequiredService<CheckRunStore>();
+        await WaitUntilAsync(() => store.Latest?.CommitSha == second);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "Timed out waiting for the condition.");
+            await Task.Delay(50, Ct);
+        }
+    }
+
+    [Fact]
     public async Task Auto_checks_are_off_by_default()
     {
         using var repo = SolutionRepo();

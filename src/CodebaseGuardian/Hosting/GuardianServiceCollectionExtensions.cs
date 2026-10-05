@@ -55,7 +55,9 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<ICheckRunner, CheckRunner>();
         if (configuration.GetValue<bool>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.AutoChecks)}"))
         {
-            services.AddSingleton<IRepositoryChangeHandler, AutoChecksCommitHandler>();
+            services.AddSingleton<AutoChecksCommitHandler>();
+            services.AddSingleton<IRepositoryChangeHandler>(sp => sp.GetRequiredService<AutoChecksCommitHandler>());
+            services.AddHostedService(sp => sp.GetRequiredService<AutoChecksCommitHandler>());
         }
 
         // The watcher does nothing unless Guardian:WatchEnabled is set.

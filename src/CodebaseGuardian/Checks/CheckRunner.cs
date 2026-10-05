@@ -46,12 +46,14 @@ public sealed class CheckRunner(
             var spec = new ProcessSpec(command.FileName, command.Arguments, git.RootPath) { Timeout = timeout };
 
             ProcessResult result;
+            ExecutableNotFoundException? notFound = null;
             try
             {
                 result = await processes.RunAsync(spec, cancellationToken);
             }
             catch (ExecutableNotFoundException exception)
             {
+                notFound = exception;
                 result = new ProcessResult(-1, "", exception.Message, false, false, TimeSpan.Zero);
             }
 
@@ -61,7 +63,8 @@ public sealed class CheckRunner(
                 NewRunId(startedAt), command.Display, result.ExitCode,
                 Passed: result.ExitCode == 0 && !result.TimedOut, result.TimedOut,
                 startedAt, result.Duration,
-                result.TimedOut ? $"timed out after {timeout.TotalMinutes.ToString(CultureInfo.InvariantCulture)} minutes" : parsed.Summary,
+                notFound is not null ? notFound.Message
+                : result.TimedOut ? $"timed out after {timeout.TotalMinutes.ToString(CultureInfo.InvariantCulture)} minutes" : parsed.Summary,
                 parsed.FailedTests, log, trigger, commitSha);
 
             store.Add(run);

@@ -105,8 +105,37 @@ public class CheckRunnerTests
 
         Assert.False(run.Passed);
         Assert.True(run.TimedOut);
+        Assert.Equal("timed out after 3 minutes", run.Summary);
         Assert.Equal(TimeSpan.FromMinutes(3), Assert.Single(h.Process.Calls).Timeout);
         Assert.Contains(h.Events.Events, e => e.Name == "checks.failed");
+    }
+
+    [Fact]
+    public async Task A_missing_executable_is_a_failed_run_whose_summary_is_the_error()
+    {
+        using var h = new Harness(new CheckOptions { Command = "no-such-tool" });
+        var missing = new ExecutableNotFoundException("no-such-tool", new InvalidOperationException());
+        var runner = new CheckRunner(new ThrowingRunner(missing), new GitRepository(new ProcessRunner(),
+            Options.Create(new GuardianOptions { RepositoryPath = h.Repo.Path })), new FixedResolver(), h.Events, h.Store,
+            Options.Create(new CheckOptions()), TimeProvider.System);
+
+        var run = await runner.RunAsync("tool", null, null, Ct);
+
+        Assert.False(run.Passed);
+        Assert.Equal(-1, run.ExitCode);
+        Assert.Equal(missing.Message, run.Summary);
+        Assert.Contains("no-such-tool", run.Log);
+        Assert.Contains(h.Events.Events, e => e.Name == "checks.failed");
+    }
+
+    private sealed class ThrowingRunner(Exception exception) : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(ProcessSpec spec, CancellationToken cancellationToken = default) => throw exception;
+    }
+
+    private sealed class FixedResolver : ICheckCommandResolver
+    {
+        public CheckCommand? Resolve() => new("no-such-tool", []);
     }
 
     [Fact]
