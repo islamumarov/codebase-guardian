@@ -7,6 +7,7 @@ using CodebaseGuardian.Checks;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
+using CodebaseGuardian.Security;
 using CodebaseGuardian.Tools;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
@@ -60,6 +61,9 @@ public static class GuardianServiceCollectionExtensions
             services.AddHostedService(sp => sp.GetRequiredService<AutoChecksCommitHandler>());
         }
 
+        services.AddSingleton<ISecretScanner, SecretScanner>();
+        services.AddSingleton<IRepositoryChangeHandler, SecretScanCommitHandler>();
+
         // The watcher does nothing unless Guardian:WatchEnabled is set.
         services.AddHostedService<RepositoryWatcher>();
 
@@ -69,6 +73,7 @@ public static class GuardianServiceCollectionExtensions
             .WithTools<RepositoryTools>()
             .WithTools<EventTools>()
             .WithTools<CheckTools>()
+            .WithTools<SecurityTools>()
             .WithResources<RepositoryResources>()
             .WithResources<CheckResources>();
     }
