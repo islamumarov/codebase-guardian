@@ -1,3 +1,4 @@
+using System.Text.Json;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -56,13 +57,73 @@ public class DependencyToolsTests
         var npm = json.GetProperty("ecosystems")[0];
         Assert.Equal("npm", npm.GetProperty("ecosystem").GetString());
         Assert.Equal("ok", npm.GetProperty("status").GetString());
-        Assert.False(npm.TryGetProperty("reason", out _));
+        Assert.Equal(JsonValueKind.Null, npm.GetProperty("reason").ValueKind);
         var lodash = npm.GetProperty("vulnerable").EnumerateArray().Single(v => v.GetProperty("package").GetString() == "lodash");
         Assert.Equal("high", lodash.GetProperty("severity").GetString());
-        Assert.False(lodash.TryGetProperty("project", out _));
+        Assert.Equal(JsonValueKind.Null, lodash.GetProperty("project").ValueKind);
         var text = string.Join('\n', result.Content.OfType<TextContentBlock>().Select(b => b.Text));
         Assert.Contains("2 vulnerable", text);
         Assert.Contains("2 outdated", text);
+    }
+
+    [Fact]
+    public async Task The_structured_content_contains_every_property_the_output_schema_requires()
+    {
+        using var repo = NpmRepo();
+        await using var server = await StartAsync(repo, NpmFake());
+        var tool = Assert.Single(await server.Client.ListToolsAsync(cancellationToken: Ct), t => t.Name == "audit_dependencies");
+
+        var result = await server.Client.CallToolAsync("audit_dependencies", cancellationToken: Ct);
+
+        // The npm report has a null reason, advisoryUrl (express) and project: the nullable properties are the risk.
+        AssertConforms(tool.ProtocolTool.OutputSchema!.Value, result.StructuredContent!.Value, "$", tool.ProtocolTool.OutputSchema!.Value);
+    }
+
+    private static JsonElement Resolve(JsonElement schema, JsonElement root)
+    {
+        if (schema.TryGetProperty("$ref", out var reference))
+        {
+            var node = root;
+            foreach (var part in reference.GetString()!.TrimStart('#', '/').Split('/', StringSplitOptions.RemoveEmptyEntries))
+            {
+                node = node.GetProperty(part);
+            }
+
+            return node;
+        }
+
+        return schema;
+    }
+
+    private static void AssertConforms(JsonElement schema, JsonElement value, string path, JsonElement root)
+    {
+        schema = Resolve(schema, root);
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            if (schema.TryGetProperty("required", out var required))
+            {
+                foreach (var name in required.EnumerateArray().Select(r => r.GetString()!))
+                {
+                    Assert.True(value.TryGetProperty(name, out _), $"{path}.{name} is required by the output schema but missing from the content");
+                }
+            }
+
+            if (schema.TryGetProperty("properties", out var properties))
+            {
+                foreach (var property in properties.EnumerateObject().Where(p => value.TryGetProperty(p.Name, out _)))
+                {
+                    AssertConforms(property.Value, value.GetProperty(property.Name), $"{path}.{property.Name}", root);
+                }
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.Array && schema.TryGetProperty("items", out var items))
+        {
+            var index = 0;
+            foreach (var element in value.EnumerateArray())
+            {
+                AssertConforms(items, element, $"{path}[{index++}]", root);
+            }
+        }
     }
 
     [Fact]
