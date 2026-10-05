@@ -26,6 +26,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="CodebaseGuardian.Tests" />
     <ProjectReference Include="../Mcp.Skills/Mcp.Skills.csproj" />
     <ProjectReference Include="../Mcp.Events/Mcp.Events.csproj" />
   </ItemGroup>

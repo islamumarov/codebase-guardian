@@ -1,6 +1,7 @@
 using CodebaseGuardian.Hosting;
 using Microsoft.Extensions.Configuration;
 
+// Each host normalizes the raw arguments itself, exactly once (Normalize is not idempotent).
 var arguments = GuardianCommandLine.Normalize(args);
 
 // Only the transport is needed to dispatch; each host builds its own full configuration. Same sources as the hosts:
@@ -13,5 +14,5 @@ var transport = new ConfigurationBuilder()
     .GetValue<GuardianTransport>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.Transport)}");
 
 return transport == GuardianTransport.Http
-    ? await HttpHost.RunAsync(arguments)
-    : await StdioHost.RunAsync(arguments);
+    ? await HttpHost.RunAsync(args)
+    : await StdioHost.RunAsync(args);

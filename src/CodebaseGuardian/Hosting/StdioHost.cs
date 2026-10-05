@@ -9,10 +9,13 @@ namespace CodebaseGuardian.Hosting;
 /// <summary>Runs the server on stdin/stdout.</summary>
 public static class StdioHost
 {
+    /// <param name="args">The raw command line; it is normalized here, exactly once.</param>
     /// <returns>The process exit code.</returns>
-    public static async Task<int> RunAsync(string[] normalizedArgs)
+    public static async Task<int> RunAsync(string[] args)
     {
-        ArgumentNullException.ThrowIfNull(normalizedArgs);
+        ArgumentNullException.ThrowIfNull(args);
+
+        var normalizedArgs = GuardianCommandLine.Normalize(args);
 
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
         {

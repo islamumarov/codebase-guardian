@@ -40,6 +40,8 @@ public sealed class HttpTransportTests : IDisposable
     [Theory]
     [InlineData("evil.example.com", null)]
     [InlineData(null, "http://evil.example.com")]
+    [InlineData(null, "null")]
+    [InlineData(null, "http://localhost.evil.com")]
     public async Task Requests_with_a_non_loopback_Host_or_Origin_are_rejected_to_stop_DNS_rebinding(string? host, string? origin)
     {
         await using var server = await StartAsync();
@@ -50,20 +52,38 @@ public sealed class HttpTransportTests : IDisposable
 
         using var response = await http.SendAsync(request, Ct);
 
-        Assert.True((int)response.StatusCode is >= 400 and < 500, $"was {(int)response.StatusCode}");
+        Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
     }
 
-    [Fact]
-    public async Task A_loopback_Origin_is_accepted()
+    [Theory]
+    [InlineData("http://localhost:3000")]
+    [InlineData("http://127.0.0.1:5199")]
+    [InlineData("http://[::1]:3000")]
+    public async Task A_loopback_Origin_is_accepted(string origin)
     {
         await using var server = await StartAsync();
         using var http = new HttpClient();
         using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(server.BaseAddress, "/healthz"));
-        request.Headers.TryAddWithoutValidation("Origin", "http://localhost:3000");
+        request.Headers.TryAddWithoutValidation("Origin", origin);
 
         using var response = await http.SendAsync(request, Ct);
 
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task HttpAllowRemote_drops_the_Host_check_but_still_rejects_a_non_loopback_Origin()
+    {
+        await using var server = await GuardianHttpTestHost.StartAsync(
+            _repo.Path, new Dictionary<string, string?> { ["Guardian:HttpAllowRemote"] = "true" }, cancellationToken: Ct);
+        using var http = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(server.BaseAddress, "/healthz"));
+        request.Headers.Host = "guardian.internal";
+        request.Headers.TryAddWithoutValidation("Origin", "http://evil.example.com");
+
+        using var response = await http.SendAsync(request, Ct);
+
+        Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]
@@ -201,11 +221,64 @@ public sealed class HttpTransportTests : IDisposable
     [InlineData("http://0.0.0.0:5199")]
     [InlineData("http://192.0.2.1:5199")]
     [InlineData("http://example.com:5199")]
+    [InlineData("http://[::]:5199")]
+    [InlineData("http://127.0.0.1:0;http://0.0.0.0:0")]
     public void Non_loopback_url_is_refused_without_HttpAllowRemote(string url)
     {
-        var exception = Assert.Throws<InvalidOperationException>(() => HttpHost.Build(["--urls", url, "--repo", _repo.Path]));
+        var exception = Assert.ThrowsAny<InvalidOperationException>(() => HttpHost.Build(["--urls", url, "--repo", _repo.Path]));
 
         Assert.Contains("HttpAllowRemote", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void An_empty_url_is_refused(string url)
+    {
+        var exception = Assert.ThrowsAny<InvalidOperationException>(() => HttpHost.Build([$"--urls={url}", "--repo", _repo.Path]));
+
+        Assert.Contains("HttpUrl", exception.Message);
+    }
+
+    [Fact]
+    public void Kestrel_endpoint_configuration_is_refused_without_HttpAllowRemote()
+    {
+        var exception = Assert.ThrowsAny<InvalidOperationException>(() => HttpHost.Build(
+            ["--urls", "http://127.0.0.1:0", "--Kestrel:Endpoints:e:Url=http://0.0.0.0:5299", "--repo", _repo.Path]));
+
+        Assert.Contains("HttpAllowRemote", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1:5000", true)]
+    [InlineData("http://[::1]:5000", true)]
+    [InlineData("http://localhost:5000", true)]
+    [InlineData("http://0.0.0.0:5000", false)]
+    [InlineData("http://[::]:5000", false)]
+    [InlineData("http://192.0.2.1:5000", false)]
+    public void The_bound_address_backstop_accepts_only_loopback_unless_remote_is_allowed(string address, bool loopback)
+    {
+        if (loopback)
+        {
+            HttpHost.VerifyBoundAddresses([address], allowRemote: false);
+        }
+        else
+        {
+            var exception = Assert.ThrowsAny<InvalidOperationException>(() => HttpHost.VerifyBoundAddresses([address], allowRemote: false));
+            Assert.Contains("HttpAllowRemote", exception.Message);
+        }
+
+        HttpHost.VerifyBoundAddresses([address], allowRemote: true);
+    }
+
+    [Fact]
+    public async Task The_no_watch_flag_reaches_the_http_host_once_normalized()
+    {
+        await using var app = HttpHost.Build(
+            ["--no-watch", "--urls", "http://127.0.0.1:0", "--repo", _repo.Path, "--Logging:LogLevel:Default=None"]);
+
+        var options = app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<GuardianOptions>>().Value;
+        Assert.False(options.WatchEnabled);
     }
 
     [Theory]
