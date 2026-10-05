@@ -12,6 +12,7 @@ using CodebaseGuardian.Security;
 using CodebaseGuardian.Tools;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
+using Mcp.Skills;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -49,6 +50,8 @@ public static class GuardianServiceCollectionExtensions
         // Instructions are composed when McpServerOptions are first built, so contributors that are
         // registered after this call (by tests, or by features added later) are included.
         services.AddSingleton<IInstructionsContributor, GuardianInstructions>();
+        services.AddSingleton<IInstructionsContributor, SkillsInstructionsContributor>();
+        services.AddSingleton<IInstructionsContributor, EventsInstructionsContributor>();
         services.AddOptions<McpServerOptions>().Configure<IEnumerable<IInstructionsContributor>>(
             (options, contributors) => options.ServerInstructions = GuardianInstructions.Compose(contributors));
 
@@ -72,6 +75,8 @@ public static class GuardianServiceCollectionExtensions
 
         return services
             .AddMcpServer(options => options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion })
+            .WithSkills(skills => skills.Directories.Add(
+                SkillsDirectoryFor(configuration) ?? Path.Combine(AppContext.BaseDirectory, "skills")))
             .WithEvents(GuardianEvents.Register)
             .WithTools<RepositoryTools>()
             .WithTools<EventTools>()
@@ -80,6 +85,12 @@ public static class GuardianServiceCollectionExtensions
             .WithTools<DependencyTools>()
             .WithResources<RepositoryResources>()
             .WithResources<CheckResources>();
+    }
+
+    private static string? SkillsDirectoryFor(IConfiguration configuration)
+    {
+        var configured = configuration[$"{GuardianOptions.SectionName}:{nameof(GuardianOptions.SkillsDirectory)}"];
+        return string.IsNullOrWhiteSpace(configured) ? null : Path.GetFullPath(configured);
     }
 
     // Empty values are left for validation to report; GetFullPath would throw for them.
