@@ -34,12 +34,14 @@ public class EndToEndTests
             cancellationToken: Ct);
 
         // 1. one events/stream with an explicit id
+        var delivered = 0;
         var received = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var handler = host.Client.RegisterNotificationHandler("notifications/events/event", (n, _) =>
         {
             var p = (JsonObject)n.Params!;
             if (p["_meta"]?[SubscriptionIdKey]?.ToString() == StreamId)
             {
+                Interlocked.Increment(ref delivered);
                 received.TrySetResult((JsonObject)p.DeepClone());
             }
 
@@ -81,6 +83,13 @@ public class EndToEndTests
         // 5. cancel the stream the way the SDK needs it over a stream transport
         await host.Client.SendNotificationAsync(
             "notifications/cancelled", new CancelledNotificationParams { RequestId = new RequestId(StreamId) }, cancellationToken: Ct);
-        await Assert.ThrowsAnyAsync<Exception>(() => stream.WaitAsync(Timeout, Ct));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stream.WaitAsync(Timeout)); // the guard fails the test with a TimeoutException
+
+        // The server really stopped: a further secret commit is detected but nothing reaches the cancelled stream.
+        var before = Volatile.Read(ref delivered);
+        repo.WriteFile("config/other.env", $"AWS_ACCESS_KEY_ID={FakeSecrets.AwsAccessKeyId()}\n");
+        repo.Commit("add other settings");
+        await Task.Delay(1000, Ct);
+        Assert.Equal(before, Volatile.Read(ref delivered));
     }
 }

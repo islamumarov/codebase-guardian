@@ -76,7 +76,14 @@ await using var handler = client.RegisterNotificationHandler("notifications/even
         Console.WriteLine($"[{id}] {p["name"]} {p["timestamp"]} {Compact(data)}");
         if (data["suggestedSkill"] is JsonValue uri)
         {
-            await LoadSkillAsync((string)uri!, ct);
+            try
+            {
+                await LoadSkillAsync((string)uri!, ct);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                Console.WriteLine($"  skill {SkillName((string)uri!)} NOT verified: {e.Message}");
+            }
         }
     }
     finally
@@ -93,9 +100,17 @@ var streams = watched.Select(name =>
 }).ToList();
 Console.WriteLine($"Watching {string.Join(", ", watched)}. Press Ctrl+C to stop.");
 
+var exitCode = 0;
 try
 {
-    await Task.WhenAny(Task.Delay(Timeout.Infinite, shutdown.Token), Task.WhenAny(streams.Select(s => (Task)s.Response)));
+    var ended = await Task.WhenAny(Task.Delay(Timeout.Infinite, shutdown.Token), Task.WhenAny(streams.Select(s => (Task)s.Response)));
+    if (ended is not { IsCanceled: true })
+    {
+        // A stream only ends before Ctrl+C when the server closed it or the connection failed.
+        var failed = streams.First(s => s.Response.IsCompleted);
+        Console.Error.WriteLine($"Stream {failed.Id} ended: {(failed.Response.IsFaulted ? failed.Response.Exception!.GetBaseException().Message : "closed by the server")}");
+        exitCode = 1;
+    }
 }
 catch (OperationCanceledException)
 {
@@ -103,11 +118,18 @@ catch (OperationCanceledException)
 
 foreach (var (id, _) in streams)
 {
-    await client.SendNotificationAsync("notifications/cancelled", new CancelledNotificationParams { RequestId = new RequestId(id) });
+    try
+    {
+        await client.SendNotificationAsync("notifications/cancelled", new CancelledNotificationParams { RequestId = new RequestId(id) });
+    }
+    catch (Exception e)
+    {
+        Console.Error.WriteLine($"Could not cancel {id}: {e.Message}");
+    }
 }
 
 Console.WriteLine("Stopped.");
-return 0;
+return exitCode;
 
 async Task<JsonObject> RequestAsync(string method, JsonObject parameters)
 {
@@ -167,3 +189,6 @@ static string? FindServerProject()
 
     return null;
 }
+
+// skill://security-audit/SKILL.md -> security-audit
+static string SkillName(string uri) => uri.Split('/', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1) ?? uri;
