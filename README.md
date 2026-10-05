@@ -265,3 +265,7 @@ samples/GuardianWatch demo client
 tests/                CodebaseGuardian.Tests (includes the end-to-end scenario test)
 docs/                 spec, backlog, reference notes
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 Islam Umarov. The bundled skills are also MIT-licensed (`license: "MIT"` in each `SKILL.md`).
