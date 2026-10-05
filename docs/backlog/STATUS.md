@@ -43,3 +43,10 @@ Ruling (T3): null properties (e.g. `headSha` on an unborn repo) are omitted from
 Task 3: minor (deferred): `committedAt` now has an unconstrained (`{}`) schema in `recent_commits`' outputSchema because of the property-level converter; a schema transform could restore `type: string, format: date-time`.
 Task 3: minor (deferred): `ToolErrors` messages from `ArgumentException` keep the "(Parameter 'x')" suffix.
 Task 3: minor (deferred): the resource serializer options duplicate the SDK's tool serialization; a parity test would catch drift.
+Task 4: complete (commits 098c353..60ed19d, review clean; suite 141/141)
+Task 4: minor (deferred): `SkillCatalog.Load` lets IOException/UnauthorizedAccessException from size/read/walk escape raw instead of collecting them into `SkillValidationException`.
+Task 4: minor (deferred): `FrontmatterParser` turns explicitly tagged plain scalars (`!!int 5`) into strings and keeps `.inf`/`.nan` as strings; `1e999` parses to Infinity and would break `ToJsonString` — reject tagged and non-finite scalars.
+Task 4: minor (deferred): the skills walk adds non-regular files (FIFOs, sockets), which would hang `ReadAllBytes`; skip or reject them.
+Task 4: minor (deferred): empty subdirectories never enter the directory index, so `TryListDirectory` returns false for them.
+Task 4: minor (deferred): a bad file in a nested skill is reported for both outer and inner skill; nested files are re-hashed per skill.
+Task 4: minor (deferred): literal U+FEFF characters in FrontmatterParser.cs and FrontmatterParserTests.cs (use `﻿`); the symlink test returns silently instead of `Assert.Skip`; no tests for 501-char/non-string `compatibility` or the 16 MiB boundary.
