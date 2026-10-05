@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using ModelContextProtocol.Protocol;
 
 namespace Mcp.Events;
 
@@ -16,6 +17,9 @@ public sealed partial class EventsOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(15);
     /// <summary>Epic 2; adds "webhook" to the advertised delivery modes (ruling R5).</summary>
     public bool WebhooksEnabled { get; set; }
+
+    /// <summary>Resolves the authenticated principal of a request; <see langword="null"/> for anonymous requests.</summary>
+    public Func<JsonRpcRequest, string?> PrincipalResolver { get; set; } = EventsPrincipal.FromRequest;
 
     public IReadOnlyList<EventDefinition> Definitions => _definitions;
 

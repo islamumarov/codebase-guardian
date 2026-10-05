@@ -43,6 +43,12 @@ public static class GuardianServiceCollectionExtensions
             .PostConfigure(options => options.RepositoryPath = ToFullPath(options.RepositoryPath))
             .ValidateOnStart();
 
+        services.AddSingleton<IValidateOptions<HttpAuthOptions>, HttpAuthOptionsValidator>();
+        services.AddOptions<HttpAuthOptions>()
+            .Bind(configuration.GetSection(HttpAuthOptions.SectionName))
+            .ValidateOnStart();
+        services.AddOptions<WebhookHostingOptions>().Bind(configuration.GetSection(WebhookHostingOptions.SectionName));
+
         services.Configure<CheckOptions>(configuration.GetSection(CheckOptions.SectionName));
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IProcessRunner, ProcessRunner>();
@@ -83,6 +89,7 @@ public static class GuardianServiceCollectionExtensions
                 SkillsDirectoryFor(configuration) ?? Path.Combine(AppContext.BaseDirectory, "skills")))
             .WithEvents(options =>
             {
+                options.WebhooksEnabled = WebhooksEnabled(configuration);
                 GuardianEvents.Register(options);
                 if (GitHubEnabled(configuration))
                 {
@@ -124,6 +131,15 @@ public static class GuardianServiceCollectionExtensions
         }
 
         return services;
+    }
+
+    /// <summary>Webhooks are offered on authenticated HTTP only (ruling R5); stdio never offers them.</summary>
+    private static bool WebhooksEnabled(IConfiguration configuration)
+    {
+        var transport = configuration.GetValue<GuardianTransport>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.Transport)}");
+        var keys = configuration.GetSection(HttpAuthOptions.SectionName).Get<HttpAuthOptions>()?.ApiKeys.Count ?? 0;
+        var hosting = configuration.GetSection(WebhookHostingOptions.SectionName).Get<WebhookHostingOptions>() ?? new WebhookHostingOptions();
+        return transport == GuardianTransport.Http && keys > 0 && hosting.Enabled;
     }
 
     private static bool GitHubEnabled(IConfiguration configuration) =>
