@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -8,7 +9,12 @@ using ModelContextProtocol.Server;
 
 namespace Mcp.Events;
 
-internal sealed class EventsConfigureOptions(IOptions<EventsOptions> eventsOptions, IEventLog log, ILogger<EventsConfigureOptions>? logger = null)
+internal sealed class EventsConfigureOptions(
+    IOptions<EventsOptions> eventsOptions,
+    IEventLog log,
+    TimeProvider time,
+    ILogger<EventsConfigureOptions>? logger = null,
+    IHostApplicationLifetime? lifetime = null)
     : IConfigureOptions<McpServerOptions>
 {
     private readonly EventsOptions _options = eventsOptions.Value;
@@ -23,6 +29,8 @@ internal sealed class EventsConfigureOptions(IOptions<EventsOptions> eventsOptio
         options.RequestHandlers ??= [];
         options.RequestHandlers.Add(new McpServerRequestHandler { Method = EventsProtocol.ListMethod, Handler = HandleList });
         options.RequestHandlers.Add(new McpServerRequestHandler { Method = EventsProtocol.PollMethod, Handler = HandlePoll });
+        var stream = new EventStreamHandler(_options, log, time, lifetime, _logger);
+        options.RequestHandlers.Add(new McpServerRequestHandler { Method = EventsProtocol.StreamMethod, Handler = stream.HandleAsync });
     }
 
     private ValueTask<JsonNode?> HandleList(JsonRpcRequest request, CancellationToken cancellationToken) =>
