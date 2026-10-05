@@ -6,6 +6,8 @@ using CodebaseGuardian.Git;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
 using CodebaseGuardian.Tools;
+using CodebaseGuardian.Watching;
+using Mcp.Events;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -44,9 +46,14 @@ public static class GuardianServiceCollectionExtensions
         services.AddOptions<McpServerOptions>().Configure<IEnumerable<IInstructionsContributor>>(
             (options, contributors) => options.ServerInstructions = GuardianInstructions.Compose(contributors));
 
+        // The watcher does nothing unless Guardian:WatchEnabled is set.
+        services.AddHostedService<RepositoryWatcher>();
+
         return services
             .AddMcpServer(options => options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion })
+            .WithEvents(GuardianEvents.Register)
             .WithTools<RepositoryTools>()
+            .WithTools<EventTools>()
             .WithResources<RepositoryResources>();
     }
 
