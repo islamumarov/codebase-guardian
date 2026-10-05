@@ -37,6 +37,11 @@ Codebase Guardian watches one local Git repository. It notices new commits, bran
 | `checks.completed` | A check run finished | none; `checks.failed` covers failures |
 | `checks.failed` | A check run failed | `skill://bug-triage/SKILL.md` |
 | `security.secret_detected` | The scanner found a possible secret | `skill://security-audit/SKILL.md` |
+| `github.issue.opened` | A new issue was opened on GitHub | `skill://bug-triage/SKILL.md` |
+| `github.pr.comment.created` | A comment was added to a pull request | `skill://pr-review/SKILL.md` |
+| `github.ci.failed` | A GitHub Actions run failed | `skill://bug-triage/SKILL.md` |
+
+The three `github.*` events exist only when the server has a GitHub token and a github.com origin. Actions that write to GitHub (`create_issue`, `comment_on_pr`, `open_pull_request`) always ask the user to confirm.
 
 ## Tools and resources
 

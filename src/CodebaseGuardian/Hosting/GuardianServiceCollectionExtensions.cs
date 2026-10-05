@@ -81,7 +81,14 @@ public static class GuardianServiceCollectionExtensions
             .AddMcpServer(options => options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion })
             .WithSkills(skills => skills.Directories.Add(
                 SkillsDirectoryFor(configuration) ?? Path.Combine(AppContext.BaseDirectory, "skills")))
-            .WithEvents(GuardianEvents.Register)
+            .WithEvents(options =>
+            {
+                GuardianEvents.Register(options);
+                if (GitHubEnabled(configuration))
+                {
+                    GuardianEvents.RegisterGitHub(options);
+                }
+            })
             .WithTools<RepositoryTools>()
             .WithTools<EventTools>()
             .WithTools<CheckTools>()
@@ -103,8 +110,24 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<IGitHubTokenProvider, GitHubTokenProvider>();
         services.AddSingleton<IGitHubRepositoryResolver, GitHubRepositoryResolver>();
         services.AddHttpClient<IGitHubClient, GitHubClient>(GitHubClient.HttpClientName);
+
+        // The poller is a singleton whenever GitHub is enabled (tests drive it directly); it runs as a hosted
+        // service only when polling is enabled too.
+        var github = configuration.GetSection(GitHubOptions.SectionName).Get<GitHubOptions>() ?? new GitHubOptions();
+        if (github.Enabled)
+        {
+            services.AddSingleton<GitHubEventPoller>();
+            if (github.PollEnabled)
+            {
+                services.AddHostedService(sp => sp.GetRequiredService<GitHubEventPoller>());
+            }
+        }
+
         return services;
     }
+
+    private static bool GitHubEnabled(IConfiguration configuration) =>
+        (configuration.GetSection(GitHubOptions.SectionName).Get<GitHubOptions>() ?? new GitHubOptions()).Enabled;
 
     private static string? SkillsDirectoryFor(IConfiguration configuration)
     {

@@ -37,6 +37,14 @@ public sealed partial class SkillContentTests
     [GeneratedRegex(@"(?<!!)\[[^\]\r\n]*\]\(([^)\s]+)\)")]
     private static partial Regex MarkdownLink();
 
+    // GitHub is enabled (and polling is not) so that the github.* events and the GitHub tools exist for the lint.
+    private static Task<InProcessMcpServer> StartAsync(TempGitRepo repo) =>
+        GuardianTestHost.StartAsync(
+            repo.Path,
+            new Dictionary<string, string?> { ["Guardian:GitHub:Enabled"] = "true", ["Guardian:GitHub:PollEnabled"] = "false" },
+            new FakeGitHubApi().Install,
+            cancellationToken: Ct);
+
     private static SkillCatalog LoadCatalog()
     {
         var options = new SkillsOptions();
@@ -98,7 +106,7 @@ public sealed partial class SkillContentTests
         Assert.Equal(SkillNames, catalog.Skills.Select(s => s.Name).Order(StringComparer.Ordinal).ToArray());
 
         using var repo = TempGitRepo.Create();
-        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+        await using var server = await StartAsync(repo);
 
         var list = await server.RequestAsync("skills/list", cancellationToken: Ct);
         var uris = list["skills"]!.AsArray().Select(s => (string)s!["uri"]!).ToList();
@@ -134,7 +142,7 @@ public sealed partial class SkillContentTests
     {
         var catalog = LoadCatalog();
         using var repo = TempGitRepo.Create();
-        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+        await using var server = await StartAsync(repo);
         var events = (await server.RequestAsync("events/list", cancellationToken: Ct))["events"]!.AsArray()
             .Select(e => (string)e!["name"]!).ToHashSet();
 
@@ -149,7 +157,7 @@ public sealed partial class SkillContentTests
     {
         var catalog = LoadCatalog();
         using var repo = TempGitRepo.Create();
-        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+        await using var server = await StartAsync(repo);
 
         var tools = await server.Client.ListToolsAsync(cancellationToken: Ct);
         var toolNames = tools.Select(t => t.Name).ToHashSet();
@@ -261,6 +269,9 @@ public sealed partial class SkillContentTests
         Assert.Contains("`audit_dependencies`", Text("dependency-hygiene"));
         Assert.Contains("`scan_secrets`", Text("security-audit"));
         Assert.Contains("`scope:\"commit\"`", Text("pr-review"));
+        Assert.Contains("`create_issue`", Text("bug-triage"));
+        Assert.Contains("`comment_on_pr`", Text("pr-review"));
+        Assert.Contains("`open_pull_request`", Text("guardian"));
         foreach (var rule in new[] { "aws-access-key-id", "github-token", "github-fine-grained-pat", "slack-token", "stripe-live-key", "private-key", "jwt", "generic-secret-assignment" })
         {
             Assert.Contains($"`{rule}`", Text("security-audit"));
@@ -271,7 +282,7 @@ public sealed partial class SkillContentTests
     public async Task Server_instructions_point_to_every_skill_and_the_polling_fallback()
     {
         using var repo = TempGitRepo.Create();
-        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+        await using var server = await StartAsync(repo);
         var instructions = server.Client.ServerInstructions;
 
         Assert.NotNull(instructions);

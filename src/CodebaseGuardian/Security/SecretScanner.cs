@@ -16,6 +16,9 @@ public interface ISecretScanner
 
     /// <summary>Only added lines are scanned; line numbers are those of the new file.</summary>
     IReadOnlyList<SecretFinding> ScanPatch(string unifiedDiff);
+
+    /// <summary>Replaces every rule match's secret with <see cref="Redactor.Redact"/>; text without matches is returned unchanged.</summary>
+    string RedactSecrets(string text);
 }
 
 public sealed class SecretScanner(IGitRepository git, ILogger<SecretScanner> logger) : ISecretScanner
@@ -80,6 +83,62 @@ public sealed class SecretScanner(IGitRepository git, ILogger<SecretScanner> log
         }
 
         return findings;
+    }
+
+    public string RedactSecrets(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var spans = new List<(int Start, int End)>();
+        foreach (var rule in SecretRules.All)
+        {
+            try
+            {
+                foreach (Match match in rule.Pattern.Matches(text))
+                {
+                    var group = match.Groups[rule.SecretGroup];
+                    if (group.Success && group.Length > 0 && (rule.MinEntropy is not { } min || SecretRules.Entropy(group.Value) >= min))
+                    {
+                        spans.Add((group.Index, group.Index + group.Length));
+                    }
+                }
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                logger.LogWarning("Rule {RuleId} timed out while redacting text; the text is withheld.", rule.Id);
+                return "[text withheld: secret scan timed out]";
+            }
+        }
+
+        if (spans.Count == 0)
+        {
+            return text;
+        }
+
+        // Rules can overlap (a token inside an assignment): redact the union of the spans once.
+        spans.Sort();
+        var builder = new StringBuilder(text.Length);
+        var position = 0;
+        var (start, end) = spans[0];
+        void Flush()
+        {
+            builder.Append(text, position, start - position).Append(Redactor.Redact(text[start..end]));
+            position = end;
+        }
+
+        foreach (var span in spans.Skip(1))
+        {
+            if (span.Start < end)
+            {
+                end = Math.Max(end, span.End);
+                continue;
+            }
+
+            Flush();
+            (start, end) = span;
+        }
+
+        Flush();
+        return builder.Append(text, position, text.Length - position).ToString();
     }
 
     // One finding per (rule, path, line): the first match of each rule on the line.

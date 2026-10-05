@@ -1,6 +1,6 @@
 ---
 name: "pr-review"
-description: "Review a new commit. Use when a repo.commit.created event arrives or the user asks for a review. Reads the diff with diff_summary, applies the review checklist including a commit secret scan and writes feedback using the review comment template."
+description: "Review a commit or a pull request comment. Use when a repo.commit.created or github.pr.comment.created event arrives or the user asks for a review. Reads the diff with diff_summary, scans for secrets and replies with comment_on_pr."
 license: "MIT"
 metadata:
   author: "codebase-guardian"
@@ -9,7 +9,7 @@ metadata:
 
 # Commit review
 
-Use this when `repo.commit.created` arrives or when the user asks for a review of a commit.
+Use this when `repo.commit.created` arrives or when the user asks for a review of a commit. For a comment on a pull request, see the section on `github.pr.comment.created` below.
 
 ## Steps
 
@@ -20,6 +20,15 @@ Use this when `repo.commit.created` arrives or when the user asks for a review o
 5. Optionally call `run_checks` when the change touches behaviour and no recent `checks.completed` event covers this commit.
 6. Write the review with [the review comment template](assets/review-comment-template.md). Lead with blockers, then suggestions, then praise for what is good.
 7. Hand the review to the user. Do not amend, revert or push anything on your own.
+
+## Pull request comments
+
+When `github.pr.comment.created` arrives:
+
+1. Read `prNumber`, `author`, `body`, `url`, `path` and `line`. A conversation comment has `path` and `line` set to null; a review comment points at one line.
+2. For a review comment, read the code around `path` and `line` with `diff_summary`, and answer the question or check the claim against the code. For a conversation comment, answer from the whole change.
+3. Reply with `comment_on_pr`, using `prNumber` and the body written from [the review comment template](assets/review-comment-template.md). The server asks the user to confirm before it posts.
+4. Do not reply to your own comments, and never quote secrets.
 
 ## Rules
 
