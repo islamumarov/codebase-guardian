@@ -129,6 +129,7 @@ internal sealed class EventStreamHandler(
                 {
                     await Task.WhenAny(arrival, timer).ConfigureAwait(false);
                     ct.ThrowIfCancellationRequested();
+                    if (arrival.IsFaulted) await arrival.ConfigureAwait(false); // a failing wait must surface, not spin
                     if (arrival.IsCompletedSuccessfully) return true;
                 }
                 finally
@@ -161,6 +162,8 @@ internal sealed class EventStreamHandler(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // For now a mid-stream failure ends the stream with -32603; the recoverable path would be a
+            // notifications/events/error (wire-format B6) followed by a retry.
             // A Matches predicate is application code; its failure is a server fault whose detail must not reach the client.
             logger.LogError(ex, "Reading events for '{EventName}' failed.", eventName);
             throw new McpProtocolException($"Event '{eventName}' could not be read.", McpErrorCode.InternalError);

@@ -191,11 +191,19 @@ public sealed class EventsStreamProtocolTests
         var stream = OpenStream(server, "s-1", Obj("""{"name":"test.alpha"}"""));
         await notes.WaitAsync("s-1", n => n.Count >= 1);
         await Publish(server, "test.alpha", Obj("""{"n":1}"""));
+        var quietSince = System.Diagnostics.Stopwatch.StartNew();
 
-        var seen = await notes.WaitAsync("s-1", n => n.Any(x => x.Method == "notifications/events/heartbeat"));
-        var lastEvent = seen.Last(n => n.Method == "notifications/events/event");
-        var heartbeat = seen.First(n => n.Method == "notifications/events/heartbeat");
-        Assert.Equal((string?)lastEvent.Params["cursor"], (string?)heartbeat.Params["cursor"]);
+        // A heartbeat for the pre-event position may legitimately arrive first; the one that matters carries the event's cursor.
+        var seen = await notes.WaitAsync("s-1", n =>
+        {
+            var events = Events(n);
+            return events.Count == 1 && n.Any(x => x.Method == "notifications/events/heartbeat"
+                && EventCursor.Decode((string)x.Params["cursor"]!).Sequence >= EventCursor.Decode((string)events[0].Params["cursor"]!).Sequence);
+        });
+        quietSince.Stop();
+        Assert.True(quietSince.Elapsed < TimeSpan.FromSeconds(1), $"heartbeat took {quietSince.Elapsed}");
+        var eventCursor = (string)Events(seen)[0].Params["cursor"]!;
+        Assert.Contains(seen, x => x.Method == "notifications/events/heartbeat" && (string?)x.Params["cursor"] == eventCursor);
 
         await stream.CancelAsync();
         await AssertEndsAsync(stream.Response);
@@ -410,6 +418,13 @@ public sealed class EventsStreamProtocolTests
             }
 
             Assert.Equal(cursors.Select(c => EventCursor.Decode(c).Sequence).OrderBy(x => x), cursors.Select(c => EventCursor.Decode(c).Sequence));
+
+            // ApplicationStopping while the stream is open ends it with the final frame. (Only the signal is raised: a full
+            // host stop races the transport teardown against the response write.)
+            host.Services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+            var final = await ReadMessage();
+            Assert.True(JsonNode.DeepEquals(
+                Obj("""{"jsonrpc":"2.0","id":"s-1","result":{"resultType":"complete","_meta":{}}}"""), final), final.ToJsonString());
         }
         finally
         {
