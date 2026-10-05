@@ -112,6 +112,13 @@ internal sealed class WebhookDispatcher(
                     _workers.Remove(worker.Subscription.Id);
                 }
             }
+
+            // A subscription that is still stored must keep a worker (unless the last one crashed).
+            if (!worker.Faulted && !_stopping.IsCancellationRequested
+                && store.TryGet(worker.Subscription.Id, out var stored) && ReferenceEquals(stored, worker.Subscription))
+            {
+                OnChanged(stored);
+            }
         }
     }
 }

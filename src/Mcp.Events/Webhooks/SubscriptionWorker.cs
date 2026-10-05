@@ -45,6 +45,9 @@ internal sealed class SubscriptionWorker
 
     public WebhookSubscription Subscription { get; }
 
+    /// <summary>True when the loop ended with an unexpected exception.</summary>
+    public bool Faulted { get; private set; }
+
     /// <summary>Tells the worker the subscription was refreshed.</summary>
     public void Signal()
     {
@@ -69,6 +72,7 @@ internal sealed class SubscriptionWorker
         }
         catch (Exception ex)
         {
+            Faulted = true;
             _logger.LogError(ex, "Webhook worker for subscription {SubscriptionId} failed and stopped.", Subscription.Id);
         }
     }
@@ -107,8 +111,12 @@ internal sealed class SubscriptionWorker
             var now = _time.GetUtcNow();
             if (now >= refreshBefore)
             {
-                _store.TryRemoveIfExpired(sub, now); // lapsed; no envelope
-                return;
+                if (!_store.TryRemoveIfExpired(sub, now))
+                {
+                    continue; // refreshed in the meantime: keep serving it
+                }
+
+                return; // lapsed; no envelope
             }
 
             if (!active)

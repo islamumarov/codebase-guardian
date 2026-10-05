@@ -111,12 +111,13 @@ public sealed class WebhookDeliveryTests
         await SubscribeAsync(server, receiver);
 
         await PublishAsync(server, "e1");
-        // Drive the clock by progress: wait for attempt n, then advance past the next retry delay.
-        await WaitUntilAsync(() => Task.FromResult(Attempts(receiver, "e1").Count == 1));
-        time.Advance(TimeSpan.FromSeconds(1));
-        await WaitUntilAsync(() => Task.FromResult(Attempts(receiver, "e1").Count == 2));
-        time.Advance(TimeSpan.FromSeconds(1));
-        await WaitUntilAsync(() => Task.FromResult(DeliveredStatus(server) is not null));
+        // Advance on every poll: the retry timer is registered only after the response arrives, so a single advance
+        // could land before it exists. RetryWindow is one hour, so this cannot exhaust the retries.
+        await WaitUntilAsync(() =>
+        {
+            time.Advance(TimeSpan.FromSeconds(1));
+            return Task.FromResult(DeliveredStatus(server) is not null);
+        });
 
         var attempts = Attempts(receiver, "e1");
         Assert.Equal(3, attempts.Count);
