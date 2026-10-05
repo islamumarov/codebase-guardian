@@ -168,6 +168,38 @@ public class CheckRunnerTests
         public void Report(string value) => messages.Add(value);
     }
 
+    private sealed class CancelThenReturnRunner(CancellationTokenSource source) : IProcessRunner
+    {
+        // A process that exits just as the caller cancels: the result arrives, the cancellation has been requested.
+        public Task<ProcessResult> RunAsync(ProcessSpec spec, CancellationToken cancellationToken = default)
+        {
+            source.Cancel();
+            return Task.FromResult(FakeProcessRunner.Result(0));
+        }
+    }
+
+    [Fact]
+    public async Task A_cancelled_run_stores_nothing_publishes_nothing_and_releases_the_lock()
+    {
+        using var h = new Harness();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = h.Repo.Path }));
+        var runner = new CheckRunner(
+            new CancelThenReturnRunner(cts), git, new CheckCommandResolver(git, Options.Create(new CheckOptions())),
+            h.Events, h.Store, Options.Create(new CheckOptions()), TimeProvider.System);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runner.RunAsync("tool", null, null, cts.Token));
+
+        Assert.Null(h.Store.Latest);
+        Assert.Empty(h.Events.Events);
+        // The one-at-a-time lock is free again.
+        h.Process.On(IsCheck, FakeProcessRunner.Result(0));
+        var again = new CheckRunner(
+            h.Process, git, new CheckCommandResolver(git, Options.Create(new CheckOptions())),
+            h.Events, h.Store, Options.Create(new CheckOptions()), TimeProvider.System);
+        Assert.True((await again.RunAsync("tool", null, null, Ct)).Passed);
+    }
+
     [Fact]
     public async Task Two_concurrent_runs_execute_one_after_the_other()
     {

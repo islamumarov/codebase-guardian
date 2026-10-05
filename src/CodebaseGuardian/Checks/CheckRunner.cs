@@ -57,6 +57,10 @@ public sealed class CheckRunner(
                 result = new ProcessResult(-1, "", exception.Message, false, false, TimeSpan.Zero);
             }
 
+            // A caller that cancelled as the process ended gets a cancellation, not a stored run or an event. A timeout
+            // is different: it is a result (TimedOut) and is recorded.
+            cancellationToken.ThrowIfCancellationRequested();
+
             var log = result.StandardOutput + "\n" + result.StandardError;
             var parsed = TestOutputParser.Parse(log, result.ExitCode);
             var run = new CheckRun(

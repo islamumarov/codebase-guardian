@@ -39,6 +39,25 @@ public class DependencyAuditorTests
         .On(s => s.FileName == "npm" && s.Arguments[0] == "outdated", FakeProcessRunner.Result(1, NpmAuditParserTests.OutdatedJson));
 
     [Fact]
+    public async Task Cancellation_propagates_instead_of_becoming_a_failed_ecosystem()
+    {
+        using var repo = Repo("App.slnx", "Directory.Packages.props");
+        var blocked = new TaskCompletionSource<ProcessResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fake = new FakeProcessRunner().OnBlocking(s => s.FileName == "dotnet", blocked);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+
+        var audit = Create(repo, fake).AuditAsync(true, null, cts.Token);
+        while (fake.Calls.Count == 0)
+        {
+            await Task.Delay(10, Ct);
+        }
+
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => audit);
+    }
+
+    [Fact]
     public async Task NuGet_runs_the_documented_commands_against_the_solution_and_parses_both_results()
     {
         using var repo = Repo("App.slnx", "Directory.Packages.props");

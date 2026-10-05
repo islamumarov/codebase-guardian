@@ -14,6 +14,7 @@ using CodebaseGuardian.Tools;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
 using Mcp.Skills;
+using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -98,6 +99,9 @@ public static class GuardianServiceCollectionExtensions
                     GuardianEvents.RegisterGitHub(options);
                 }
             })
+            .WithTasks(
+                new InMemoryMcpTaskStore { DefaultPollIntervalMs = 1000, DefaultTimeToLive = TimeSpan.FromHours(1) },
+                options => options.ExecutionModeSelector = GuardianTaskModes.Select)
             .WithTools<RepositoryTools>()
             .WithTools<EventTools>()
             .WithTools<CheckTools>()
