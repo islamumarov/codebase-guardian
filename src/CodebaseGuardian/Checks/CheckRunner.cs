@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Processes;
+using CodebaseGuardian.Security;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
 using Microsoft.Extensions.Options;
@@ -29,6 +30,7 @@ public sealed class CheckRunner(
     IEventPublisher publisher,
     CheckRunStore store,
     IOptions<CheckOptions> options,
+    ISecretScanner scanner,
     TimeProvider time) : ICheckRunner
 {
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
@@ -61,15 +63,18 @@ public sealed class CheckRunner(
             // is different: it is a result (TimedOut) and is recorded.
             cancellationToken.ThrowIfCancellationRequested();
 
+            // Check output can carry secrets (tests printing connection strings or tokens): redact once, here, before the
+            // run is stored or published anywhere (events, tool result, resources, scan report).
             var log = result.StandardOutput + "\n" + result.StandardError;
             var parsed = TestOutputParser.Parse(log, result.ExitCode);
+            var summary = notFound is not null ? notFound.Message
+                : result.TimedOut ? $"timed out after {timeout.TotalMinutes.ToString(CultureInfo.InvariantCulture)} minutes" : parsed.Summary;
             var run = new CheckRun(
-                NewRunId(startedAt), command.Display, result.ExitCode,
+                NewRunId(startedAt), scanner.RedactSecrets(command.Display), result.ExitCode,
                 Passed: result.ExitCode == 0 && !result.TimedOut, result.TimedOut,
                 startedAt, result.Duration,
-                notFound is not null ? notFound.Message
-                : result.TimedOut ? $"timed out after {timeout.TotalMinutes.ToString(CultureInfo.InvariantCulture)} minutes" : parsed.Summary,
-                parsed.FailedTests, log, trigger, commitSha);
+                scanner.RedactSecrets(summary),
+                [.. parsed.FailedTests.Select(scanner.RedactSecrets)], scanner.RedactSecrets(log), trigger, commitSha);
 
             store.Add(run);
             await PublishAsync(run, cancellationToken);
