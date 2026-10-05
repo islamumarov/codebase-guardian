@@ -413,6 +413,22 @@ public class GitHubClientTests
         Assert.True(validator.Validate(null, new GitHubOptions { Owner = "acme", Repository = "widgets" }).Succeeded);
     }
 
+    [Theory]
+    [InlineData(".", "r")]
+    [InlineData("..", "r")]
+    [InlineData("o", "..")]
+    public void Dot_segments_are_rejected_in_options(string owner, string repository) =>
+        Assert.True(new GitHubOptionsValidator().Validate(null, new GitHubOptions { Owner = owner, Repository = repository }).Failed);
+
+    [Fact]
+    public void The_request_context_never_prints_the_token()
+    {
+        var context = new GitHubClient.Context(new GitHubRepositoryRef("acme", "widgets"), "ghp_secret-token-value");
+
+        Assert.DoesNotContain("ghp_secret-token-value", context.ToString());
+        Assert.Equal("acme/widgets", context.ToString());
+    }
+
     // ---- test hosts ------------------------------------------------------------------------------------------
 
     [Fact]

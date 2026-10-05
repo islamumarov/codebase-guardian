@@ -30,6 +30,9 @@ public class GitHubRepositoryRefTests
     [InlineData("https://github.com.evil.example/acme/widgets")]
     [InlineData("https://github.com/ac me/widgets")]
     [InlineData("git@github.com:acme/wid$gets.git")]
+    [InlineData("git@github.com:../x.git")]
+    [InlineData("git@github.com:o/...git")]
+    [InlineData("https://github.com/./widgets")]
     public void Rejects_everything_else(string url)
     {
         Assert.False(GitHubRepositoryRef.TryParseRemoteUrl(url, out var repository));
