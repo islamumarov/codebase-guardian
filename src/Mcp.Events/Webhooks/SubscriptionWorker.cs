@@ -28,7 +28,7 @@ internal sealed class SubscriptionWorker
     private readonly CancellationTokenSource _stop = new();
     private readonly object _wakeGate = new();
     private TaskCompletionSource _wake = NewWake();
-    private bool _suspended;
+    private int _statsGeneration;
 
     public SubscriptionWorker(WebhookSubscription subscription, WebhookSubscriptionStore store, IEventLog log, IWebhookSender sender,
         WebhookOptions options, TimeProvider time, ILogger logger)
@@ -53,14 +53,7 @@ internal sealed class SubscriptionWorker
 
     public void Stop()
     {
-        try
-        {
-            _stop.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Already finished.
-        }
+        _stop.Cancel();
     }
 
     public async Task RunAsync(CancellationToken hostStopping)
@@ -114,21 +107,14 @@ internal sealed class SubscriptionWorker
             var now = _time.GetUtcNow();
             if (now >= refreshBefore)
             {
-                _store.Remove(sub.Id); // lapsed; no envelope
+                _store.TryRemoveIfExpired(sub, now); // lapsed; no envelope
                 return;
             }
 
             if (!active)
             {
-                _suspended = true;
                 await WaitAsync(null, wake, refreshBefore - now, ct).ConfigureAwait(false);
                 continue;
-            }
-
-            if (_suspended)
-            {
-                _suspended = false;
-                _stats.Clear(); // a refresh reactivated the subscription
             }
 
             EventReadResult read;
@@ -159,10 +145,14 @@ internal sealed class SubscriptionWorker
                     servableStart = _log.GetSequence(read.Cursor);
                 }
 
-                Advance(servableStart);
                 var gap = new JsonObject { ["type"] = "gap", ["cursor"] = gapCursor };
                 var gapId = "msg_gap_" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
-                await DeliverAsync(gapId, Encoding.UTF8.GetBytes(gap.ToJsonString()), ct).ConfigureAwait(false);
+                if (await DeliverAsync(gapId, Encoding.UTF8.GetBytes(gap.ToJsonString()), ct).ConfigureAwait(false) == Outcome.Interrupted)
+                {
+                    continue; // suspended or lapsed: the gap is reported again once delivery resumes
+                }
+
+                Advance(servableStart);
             }
 
             foreach (var envelope in read.Events)
@@ -207,14 +197,12 @@ internal sealed class SubscriptionWorker
         }
     }
 
-    private JsonObject Body(EventEnvelope envelope) => new()
+    private JsonObject Body(EventEnvelope envelope)
     {
-        ["eventId"] = envelope.EventId,
-        ["name"] = envelope.Name,
-        ["timestamp"] = EventJson.FormatTimestamp(envelope.Timestamp),
-        ["data"] = envelope.Data.DeepClone(),
-        ["cursor"] = _log.CursorAt(envelope.Sequence),
-    };
+        var body = EventJson.Envelope(envelope);
+        body["cursor"] = _log.CursorAt(envelope.Sequence);
+        return body;
+    }
 
     private long CurrentPosition()
     {
@@ -254,6 +242,38 @@ internal sealed class SubscriptionWorker
         ct.ThrowIfCancellationRequested();
     }
 
+    /// <summary>
+    /// Counts an attempt towards suspension, unless a refresh happened since it started (its outcome is stale then).
+    /// Returns true when this failure suspended the subscription; <see cref="WebhookSubscription.Active"/> is cleared under
+    /// the lock only if no refresh intervened.
+    /// </summary>
+    private bool RecordAttempt(int generation, bool succeeded)
+    {
+        lock (_store.SyncRoot)
+        {
+            var current = Subscription.RefreshGeneration;
+            if (_statsGeneration != current)
+            {
+                _stats.Clear();
+                _statsGeneration = current;
+            }
+
+            if (generation != current)
+            {
+                return false;
+            }
+
+            _stats.Record(succeeded);
+            if (succeeded || !_stats.ShouldSuspend())
+            {
+                return false;
+            }
+
+            Subscription.Active = false;
+            return true;
+        }
+    }
+
     private async Task<Outcome> DeliverAsync(string messageId, byte[] body, CancellationToken ct)
     {
         var sub = Subscription;
@@ -261,7 +281,12 @@ internal sealed class SubscriptionWorker
         for (var attempt = 0; ; attempt++)
         {
             IReadOnlyList<byte[]> keys;
-            lock (_store.SyncRoot) keys = sub.SigningKeys(_time.GetUtcNow());
+            int generation;
+            lock (_store.SyncRoot)
+            {
+                keys = sub.SigningKeys(_time.GetUtcNow());
+                generation = sub.RefreshGeneration;
+            }
 
             var result = await _sender.SendAsync(sub.Url, messageId, body, sub.Id, keys, ct).ConfigureAwait(false);
             var now = _time.GetUtcNow();
@@ -274,7 +299,7 @@ internal sealed class SubscriptionWorker
                     sub.FailedSince = null;
                 }
 
-                _stats.Record(true);
+                RecordAttempt(generation, true);
                 return Outcome.Acked;
             }
 
@@ -292,10 +317,8 @@ internal sealed class SubscriptionWorker
                 sub.FailedSince ??= now;
             }
 
-            _stats.Record(false);
-            if (_stats.ShouldSuspend())
+            if (RecordAttempt(generation, false))
             {
-                lock (_store.SyncRoot) sub.Active = false;
                 _logger.LogWarning("Webhook subscription {SubscriptionId} suspended after repeated delivery failures.", sub.Id);
                 return Outcome.Interrupted; // the event stays pending until a refresh
             }

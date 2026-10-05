@@ -23,6 +23,8 @@ public sealed class WebhookSubscription
     public DateTimeOffset? LastDeliveryAt { get; set; }
     public string? LastError { get; set; }
     public DateTimeOffset? FailedSince { get; set; }
+    /// <summary>Bumped (under SyncRoot) by every refresh; delivery outcomes from before a refresh no longer count towards suspension.</summary>
+    internal int RefreshGeneration { get; set; }
 
     /// <summary>The current secret, plus the previous one while its rotation grace lasts.</summary>
     public IReadOnlyList<byte[]> SigningKeys(DateTimeOffset now) =>

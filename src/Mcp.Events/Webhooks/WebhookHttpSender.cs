@@ -29,6 +29,8 @@ public sealed class WebhookHttpSender : IWebhookSender, IDisposable
             AllowAutoRedirect = false,
             UseCookies = false,
             UseProxy = false,
+            // No connection outlives a request, so the address check in ConnectAsync runs for every delivery.
+            PooledConnectionLifetime = TimeSpan.Zero,
             ConnectTimeout = options.RequestTimeout,
             ConnectCallback = ConnectAsync,
         };
@@ -48,9 +50,6 @@ public sealed class WebhookHttpSender : IWebhookSender, IDisposable
         request.Headers.TryAddWithoutValidation("webhook-timestamp", timestamp.ToString(System.Globalization.CultureInfo.InvariantCulture));
         request.Headers.TryAddWithoutValidation("webhook-signature", WebhookSigner.Sign(messageId, timestamp, body.Span, keys));
         request.Headers.TryAddWithoutValidation("X-MCP-Subscription-Id", subscriptionId);
-        // A fresh connection per request, so the address check in ConnectAsync runs for every delivery rather than only
-        // when a pooled keep-alive connection happens to be new.
-        request.Headers.ConnectionClose = true;
 
         // One deadline covers connecting, the headers and the body read, so an endpoint cannot stall the caller by
         // sending headers and then nothing.

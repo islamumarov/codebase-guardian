@@ -52,6 +52,24 @@ public sealed class WebhookSubscriptionStore
         return true;
     }
 
+    /// <summary>Removes <paramref name="subscription"/> only if it is still the stored instance and has lapsed at <paramref name="now"/>.</summary>
+    internal bool TryRemoveIfExpired(WebhookSubscription subscription, DateTimeOffset now)
+    {
+        lock (SyncRoot)
+        {
+            if (!_byId.TryGetValue(subscription.Id, out var current) || !ReferenceEquals(current, subscription)
+                || now < subscription.RefreshBefore)
+            {
+                return false;
+            }
+
+            _byId.Remove(subscription.Id);
+        }
+
+        Changed?.Invoke(subscription);
+        return true;
+    }
+
     public int CountFor(string principal)
     {
         lock (SyncRoot) return _byId.Values.Count(s => s.Principal == principal);

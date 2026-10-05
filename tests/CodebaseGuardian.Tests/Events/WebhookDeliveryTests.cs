@@ -107,19 +107,21 @@ public sealed class WebhookDeliveryTests
         await using var receiver = await WebhookReceiver.StartAsync(Ct);
         var seen = 0;
         receiver.StatusFor = r => r.Headers["webhook-id"] == "e1" && Interlocked.Increment(ref seen) <= 2 ? 500 : 200;
-        await using var server = await StartAsync(time: time);
+        await using var server = await StartAsync(o => o.Webhooks.RetryWindow = TimeSpan.FromHours(1), time);
         await SubscribeAsync(server, receiver);
 
         await PublishAsync(server, "e1");
-        await WaitUntilAsync(() =>
-        {
-            time.Advance(TimeSpan.FromSeconds(1));
-            return Task.FromResult(DeliveredStatus(server) is not null);
-        });
+        // Drive the clock by progress: wait for attempt n, then advance past the next retry delay.
+        await WaitUntilAsync(() => Task.FromResult(Attempts(receiver, "e1").Count == 1));
+        time.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntilAsync(() => Task.FromResult(Attempts(receiver, "e1").Count == 2));
+        time.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntilAsync(() => Task.FromResult(DeliveredStatus(server) is not null));
 
         var attempts = Attempts(receiver, "e1");
         Assert.Equal(3, attempts.Count);
         Assert.Equal(3, attempts.Select(a => a.Headers["webhook-signature"]).Distinct().Count());
+        Assert.All(attempts, a => Assert.True(WebhookReceiver.SignatureValid(a, KeyOf(receiver.Secret))));
         var refresh = await SubscribeAsync(server, receiver);
         var status = refresh["deliveryStatus"]!.AsObject();
         Assert.Null(status["lastError"]);
@@ -150,8 +152,8 @@ public sealed class WebhookDeliveryTests
     public async Task A_persistently_failing_event_is_abandoned_after_three_attempts()
     {
         await using var receiver = await WebhookReceiver.StartAsync(Ct);
-        var recovered = false;
-        receiver.StatusFor = r => !recovered && r.Headers["webhook-id"] == "e1" ? 503 : 200;
+        var recovered = 0;
+        receiver.StatusFor = r => Volatile.Read(ref recovered) == 0 && r.Headers["webhook-id"] == "e1" ? 503 : 200;
         await using var server = await StartAsync();
         await SubscribeAsync(server, receiver);
 
@@ -161,7 +163,7 @@ public sealed class WebhookDeliveryTests
         Assert.Equal("http_5xx", refresh["deliveryStatus"]!["lastError"]!.GetValue<string>());
         Assert.NotNull(refresh["failedSince"]);
 
-        recovered = true;
+        Volatile.Write(ref recovered, 1);
         await PublishAsync(server, "e2");
         await ArrivesAsync(receiver, "e2");
         await Task.Delay(300, Ct);
@@ -237,7 +239,9 @@ public sealed class WebhookDeliveryTests
 
         var gap = await receiver.WaitForAsync(r => r.Headers["webhook-id"].StartsWith("msg_gap_"), Wait, Ct);
         Assert.Equal("gap", gap.Json["type"]!.GetValue<string>());
-        Assert.False(string.IsNullOrEmpty(gap.Json["cursor"]!.GetValue<string>()));
+        var log = server.Services.GetRequiredService<IEventLog>();
+        // Capacity 5 keeps e7..e11, so servable events start after sequence 6.
+        Assert.Equal(log.CursorAt(6), gap.Json["cursor"]!.GetValue<string>());
         Assert.True(WebhookReceiver.SignatureValid(gap, KeyOf(receiver.Secret)));
         await ArrivesAsync(receiver, "e11");
         var order = receiver.Received.Select(r => r.Headers["webhook-id"]).ToList();
@@ -303,8 +307,8 @@ public sealed class WebhookDeliveryTests
     public async Task Repeated_failures_suspend_the_subscription_until_it_is_refreshed()
     {
         await using var receiver = await WebhookReceiver.StartAsync(Ct);
-        var failing = true;
-        receiver.StatusFor = r => failing && r.Json["type"]?.GetValue<string>() != "verification" ? 500 : 200;
+        var failing = 1;
+        receiver.StatusFor = r => Volatile.Read(ref failing) == 1 && r.Json["type"]?.GetValue<string>() != "verification" ? 500 : 200;
         await using var server = await StartAsync(o =>
         {
             o.Webhooks.SuspendMinAttempts = 4;
@@ -318,11 +322,36 @@ public sealed class WebhookDeliveryTests
         await WaitUntilAsync(() => Task.FromResult(!store.Snapshot().Single().Active));
         Assert.Equal(4, receiver.Received.Count(r => r.Headers["webhook-id"] is "e1" or "e2"));
 
-        failing = false;
+        Volatile.Write(ref failing, 0);
         var refresh = await SubscribeAsync(server, receiver);
-        Assert.True(refresh["deliveryStatus"]!["active"]!.GetValue<bool>());
+        Assert.False(refresh["deliveryStatus"]!["active"]!.GetValue<bool>()); // status before reactivation
         await WaitUntilAsync(() => Task.FromResult(DeliveredStatus(server) is not null));
         Assert.Equal(2, Attempts(receiver, "e2").Count); // the pending event, retried once after the refresh
         Assert.True(store.Snapshot().Single().Active);
+    }
+
+    [Fact]
+    public async Task A_refresh_resets_the_failure_statistics_so_one_more_failure_does_not_suspend_again()
+    {
+        await using var receiver = await WebhookReceiver.StartAsync(Ct);
+        receiver.StatusFor = r => r.Json["type"]?.GetValue<string>() == "verification" ? 200 : 500;
+        await using var server = await StartAsync(o =>
+        {
+            o.Webhooks.SuspendMinAttempts = 4;
+            o.Webhooks.SuspendFailureRate = 0.9;
+            o.Webhooks.RetryDelays.Clear();
+        });
+        await SubscribeAsync(server, receiver);
+        var store = server.Services.GetRequiredService<WebhookSubscriptionStore>();
+        for (var i = 1; i <= 4; i++) await PublishAsync(server, "e" + i);
+        await WaitUntilAsync(() => Task.FromResult(!store.Snapshot().Single().Active));
+
+        var refresh = await SubscribeAsync(server, receiver); // still failing
+        Assert.False(refresh["deliveryStatus"]!["active"]!.GetValue<bool>());
+        var attemptsAtRefresh = receiver.Received.Count;
+        await WaitUntilAsync(() => Task.FromResult(receiver.Received.Count > attemptsAtRefresh));
+        await Task.Delay(300, Ct);
+
+        Assert.True(store.Snapshot().Single().Active); // one failure after the refresh is not 4 attempts
     }
 }

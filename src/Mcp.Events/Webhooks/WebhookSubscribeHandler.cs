@@ -95,9 +95,11 @@ internal sealed class WebhookSubscribeHandler(
                         }
                     }
 
-                    existing.Active = true;
-                    existing.RefreshBefore = now + grant;
+                    // The status reports the state as it was before this refresh reactivates the subscription (B8).
                     status = DeliveryStatus(existing);
+                    existing.Active = true;
+                    existing.RefreshGeneration++;
+                    existing.RefreshBefore = now + grant;
                     position = existing.Position;
                     refreshBefore = existing.RefreshBefore;
                     failedSince = existing.FailedSince;
