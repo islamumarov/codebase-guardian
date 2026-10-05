@@ -31,3 +31,9 @@ Ruling (T1): no `NoWarn` added to the csproj — the brief asks for one only "fo
 Task 1: minor (deferred): `AddCodebaseGuardian` registers the validator and `GuardianInstructions` with `AddSingleton`, so a second call duplicates them; use `TryAddEnumerable`/`TryAddSingleton`.
 Task 1: minor (deferred): `InProcessMcpServer.DisposeAsync` never stops the host if `Client.DisposeAsync()` throws; wrap it in try/finally.
 Task 1: minor (deferred): `GuardianCommandLine.Normalize` consumes a positional literal `true`/`false` that follows a bare boolean flag (documented and tested quirk).
+Task 2: complete (commits b6e42ca..b09604a, review clean; suite 83/83)
+Task 2: minor (deferred): `ProcessRunner` awaits stream drain unbounded on the non-timeout path — a descendant holding stdout/stderr open can hang `RunAsync` past `Timeout` and ignore cancellation; apply the post-kill `WhenAny` grace/linked token to every path.
+Task 2: minor (deferred): `ListFilesAsync` reuses the 16 MB numstat cap and ignores `OutputTruncated` (a cut last path can be returned); `ls-files -co` also lists tracked files deleted from the working tree.
+Task 2: minor (deferred): `GitRepository.RootPath` resolves sync-over-async on first access (CancellationToken.None, 120 s timeout).
+Task 2: minor (deferred): `ProcessRunner` output capped mid-UTF-8 character decodes to U+FFFD (patches already cut on a boundary).
+Task 2: minor (deferred): subdirectory `RootPath` test compares `Path.GetFullPath`, which fails on macOS where the temp dir is a symlink; compare real paths.
