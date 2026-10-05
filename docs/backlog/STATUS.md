@@ -50,3 +50,8 @@ Task 4: minor (deferred): the skills walk adds non-regular files (FIFOs, sockets
 Task 4: minor (deferred): empty subdirectories never enter the directory index, so `TryListDirectory` returns false for them.
 Task 4: minor (deferred): a bad file in a nested skill is reported for both outer and inner skill; nested files are re-hashed per skill.
 Task 4: minor (deferred): literal U+FEFF characters in FrontmatterParser.cs and FrontmatterParserTests.cs (use `﻿`); the symlink test returns silently instead of `Assert.Skip`; no tests for 501-char/non-string `compatibility` or the 16 MiB boundary.
+Task 5: complete (commits abd0526..5acde46, review clean; suite 162/162 verified by controller)
+Task 5: minor (deferred): the skills `resources/list` filter appends skill entries to every page; append only when `cursor` is null if app resource listings ever paginate.
+Task 5: minor (deferred): calling `WithSkills` twice registers the handlers twice; use `TryAddEnumerable` or throw.
+Task 5: minor (deferred): `SkillJson.Cacheable` moves nodes between objects just to order keys; build the result directly.
+Task 5: minor (deferred): no tests for `resources/read` on a directory URI (-32602), for `ttlMs`/`cacheScope` on the blob path, or for `resultType` on `resources/read`.
