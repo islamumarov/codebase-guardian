@@ -4,6 +4,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Processes;
+using CodebaseGuardian.Resources;
+using CodebaseGuardian.Tools;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -42,8 +44,10 @@ public static class GuardianServiceCollectionExtensions
         services.AddOptions<McpServerOptions>().Configure<IEnumerable<IInstructionsContributor>>(
             (options, contributors) => options.ServerInstructions = GuardianInstructions.Compose(contributors));
 
-        return services.AddMcpServer(options =>
-            options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion });
+        return services
+            .AddMcpServer(options => options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion })
+            .WithTools<RepositoryTools>()
+            .WithResources<RepositoryResources>();
     }
 
     // Empty values are left for validation to report; GetFullPath would throw for them.
