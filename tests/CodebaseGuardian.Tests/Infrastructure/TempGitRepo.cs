@@ -161,6 +161,20 @@ public sealed class TempGitRepo : IDisposable
             startInfo.Environment.Remove(variable);
         }
 
+        // Command-scope config (GIT_CONFIG_COUNT/KEY_n/VALUE_n, GIT_CONFIG_PARAMETERS) outranks
+        // local config, so it must not leak into the hermetic repo.
+        foreach (var key in startInfo.Environment.Keys.ToList())
+        {
+            if (key.StartsWith("GIT_CONFIG_KEY_", StringComparison.OrdinalIgnoreCase)
+                || key.StartsWith("GIT_CONFIG_VALUE_", StringComparison.OrdinalIgnoreCase))
+            {
+                startInfo.Environment.Remove(key);
+            }
+        }
+
+        startInfo.Environment.Remove("GIT_CONFIG_COUNT");
+        startInfo.Environment.Remove("GIT_CONFIG_PARAMETERS");
+
         startInfo.Environment["GIT_CONFIG_GLOBAL"] = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
         startInfo.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
         startInfo.Environment["GIT_TERMINAL_PROMPT"] = "0";
