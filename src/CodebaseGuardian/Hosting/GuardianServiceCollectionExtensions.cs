@@ -9,11 +9,13 @@ using CodebaseGuardian.Git;
 using CodebaseGuardian.GitHub;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
+using CodebaseGuardian.Scanning;
 using CodebaseGuardian.Security;
 using CodebaseGuardian.Tools;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
 using Mcp.Skills;
+using ModelContextProtocol.Extensions.Tasks;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -43,6 +45,12 @@ public static class GuardianServiceCollectionExtensions
             .PostConfigure(options => options.RepositoryPath = ToFullPath(options.RepositoryPath))
             .ValidateOnStart();
 
+        services.AddSingleton<IValidateOptions<HttpAuthOptions>, HttpAuthOptionsValidator>();
+        services.AddOptions<HttpAuthOptions>()
+            .Bind(configuration.GetSection(HttpAuthOptions.SectionName))
+            .ValidateOnStart();
+        services.AddOptions<WebhookHostingOptions>().Bind(configuration.GetSection(WebhookHostingOptions.SectionName));
+
         services.Configure<CheckOptions>(configuration.GetSection(CheckOptions.SectionName));
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IProcessRunner, ProcessRunner>();
@@ -71,7 +79,11 @@ public static class GuardianServiceCollectionExtensions
 
         services.AddSingleton<IDependencyAuditor, DependencyAuditor>();
 
+        services.AddSingleton<ScanReportStore>();
+        services.AddSingleton<IFullScanService, FullScanService>();
+
         services.AddGitHubIntegration(configuration);
+        services.AddSingleton<IActionConfirmation, ActionConfirmation>();
 
         // The watcher does nothing unless Guardian:WatchEnabled is set.
         services.AddHostedService<RepositoryWatcher>();
@@ -80,14 +92,30 @@ public static class GuardianServiceCollectionExtensions
             .AddMcpServer(options => options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion })
             .WithSkills(skills => skills.Directories.Add(
                 SkillsDirectoryFor(configuration) ?? Path.Combine(AppContext.BaseDirectory, "skills")))
-            .WithEvents(GuardianEvents.Register)
+            .WithEvents(options =>
+            {
+                options.WebhooksEnabled = WebhooksEnabled(configuration);
+                options.Webhooks.AllowInsecureLoopback =
+                    (configuration.GetSection(WebhookHostingOptions.SectionName).Get<WebhookHostingOptions>() ?? new WebhookHostingOptions()).AllowInsecureLoopback;
+                GuardianEvents.Register(options);
+                if (GitHubEnabled(configuration))
+                {
+                    GuardianEvents.RegisterGitHub(options);
+                }
+            })
+            .WithTasks(
+                new InMemoryMcpTaskStore { DefaultPollIntervalMs = 1000, DefaultTimeToLive = TimeSpan.FromHours(1) },
+                options => options.ExecutionModeSelector = GuardianTaskModes.Select)
             .WithTools<RepositoryTools>()
             .WithTools<EventTools>()
             .WithTools<CheckTools>()
             .WithTools<SecurityTools>()
             .WithTools<DependencyTools>()
+            .WithTools<GitHubTools>()
+            .WithTools<ScanTools>()
             .WithResources<RepositoryResources>()
-            .WithResources<CheckResources>();
+            .WithResources<CheckResources>()
+            .WithResources<ScanResources>();
     }
 
     /// <summary>Binds <see cref="GitHubOptions"/> and registers the GitHub token provider, repository resolver and REST client.</summary>
@@ -101,8 +129,33 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<IGitHubTokenProvider, GitHubTokenProvider>();
         services.AddSingleton<IGitHubRepositoryResolver, GitHubRepositoryResolver>();
         services.AddHttpClient<IGitHubClient, GitHubClient>(GitHubClient.HttpClientName);
+
+        // The poller is a singleton whenever GitHub is enabled (tests drive it directly); it runs as a hosted
+        // service only when polling is enabled too.
+        var github = configuration.GetSection(GitHubOptions.SectionName).Get<GitHubOptions>() ?? new GitHubOptions();
+        if (github.Enabled)
+        {
+            services.AddSingleton<GitHubEventPoller>();
+            if (github.PollEnabled)
+            {
+                services.AddHostedService(sp => sp.GetRequiredService<GitHubEventPoller>());
+            }
+        }
+
         return services;
     }
+
+    /// <summary>Webhooks are offered on authenticated HTTP only (ruling R5); stdio never offers them.</summary>
+    private static bool WebhooksEnabled(IConfiguration configuration)
+    {
+        var transport = configuration.GetValue<GuardianTransport>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.Transport)}");
+        var keys = configuration.GetSection(HttpAuthOptions.SectionName).Get<HttpAuthOptions>()?.ApiKeys.Count ?? 0;
+        var hosting = configuration.GetSection(WebhookHostingOptions.SectionName).Get<WebhookHostingOptions>() ?? new WebhookHostingOptions();
+        return transport == GuardianTransport.Http && keys > 0 && hosting.Enabled;
+    }
+
+    private static bool GitHubEnabled(IConfiguration configuration) =>
+        (configuration.GetSection(GitHubOptions.SectionName).Get<GitHubOptions>() ?? new GitHubOptions()).Enabled;
 
     private static string? SkillsDirectoryFor(IConfiguration configuration)
     {

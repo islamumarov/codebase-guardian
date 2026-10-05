@@ -260,15 +260,15 @@ public sealed class HttpTransportTests : IDisposable
     {
         if (loopback)
         {
-            HttpHost.VerifyBoundAddresses([address], allowRemote: false);
+            HttpHost.VerifyBoundAddresses([address], remoteAllowed: false);
         }
         else
         {
-            var exception = Assert.ThrowsAny<InvalidOperationException>(() => HttpHost.VerifyBoundAddresses([address], allowRemote: false));
+            var exception = Assert.ThrowsAny<InvalidOperationException>(() => HttpHost.VerifyBoundAddresses([address], remoteAllowed: false));
             Assert.Contains("HttpAllowRemote", exception.Message);
         }
 
-        HttpHost.VerifyBoundAddresses([address], allowRemote: true);
+        HttpHost.VerifyBoundAddresses([address], remoteAllowed: true);
     }
 
     [Fact]
@@ -293,10 +293,10 @@ public sealed class HttpTransportTests : IDisposable
     }
 
     [Fact]
-    public async Task Non_loopback_url_is_accepted_with_HttpAllowRemote()
+    public async Task Non_loopback_url_is_accepted_with_HttpAllowRemote_and_an_API_key()
     {
         await using var app = HttpHost.Build(
-            ["--urls", "http://0.0.0.0:0", "--Guardian:HttpAllowRemote=true", "--repo", _repo.Path, "--no-watch", "--Logging:LogLevel:Default=None"]);
+            ["--urls", "http://0.0.0.0:0", "--Guardian:HttpAllowRemote=true", "--Guardian:Http:ApiKeys:alice=0123456789012345678901234567890123456789", "--repo", _repo.Path, "--no-watch", "--Logging:LogLevel:Default=None"]);
 
         Assert.NotNull(app);
     }

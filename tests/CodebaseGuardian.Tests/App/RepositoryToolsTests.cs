@@ -192,13 +192,48 @@ public class RepositoryToolsTests
         var diff = await CallAsync(server, "diff_summary");
 
         Assert.NotEqual(true, status.IsError);
-        // The SDK omits null properties from structured content.
         Assert.False(status.StructuredContent!.Value.TryGetProperty("headSha", out var headSha) && headSha.ValueKind != JsonValueKind.Null);
         Assert.NotEqual(true, commits.IsError);
         Assert.Empty(Commits(commits));
         Assert.NotEqual(true, diff.IsError);
         Assert.Equal("first.txt",
             diff.StructuredContent!.Value.GetProperty("files")[0].GetProperty("path").GetString());
+    }
+
+    [Fact]
+    public async Task Repo_status_content_conforms_to_the_output_schema_when_there_is_no_upstream()
+    {
+        using var repo = TempGitRepo.Create();
+        repo.WriteFile("a.txt", "a");
+        repo.Commit("first");
+        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+        var tool = Assert.Single(await server.Client.ListToolsAsync(cancellationToken: Ct), t => t.Name == "repo_status");
+
+        var result = await CallAsync(server, "repo_status");
+
+        var content = result.StructuredContent!.Value;
+        SchemaAssert.Conforms(tool.ProtocolTool.OutputSchema!.Value, content);
+        Assert.Equal(JsonValueKind.Null, content.GetProperty("upstream").ValueKind);
+        Assert.Contains("\"upstream\":null", TextOf(result));
+    }
+
+    [Fact]
+    public async Task Diff_summary_content_conforms_to_the_output_schema_when_a_binary_file_changed()
+    {
+        using var repo = TempGitRepo.Create();
+        repo.WriteFile("blob.bin", "abc\0def");
+        repo.Commit("binary");
+        repo.WriteFile("blob.bin", "abc\0xyz\0");
+        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+        var tool = Assert.Single(await server.Client.ListToolsAsync(cancellationToken: Ct), t => t.Name == "diff_summary");
+
+        var result = await CallAsync(server, "diff_summary");
+
+        var content = result.StructuredContent!.Value;
+        SchemaAssert.Conforms(tool.ProtocolTool.OutputSchema!.Value, content);
+        var file = content.GetProperty("files")[0];
+        Assert.Equal(JsonValueKind.Null, file.GetProperty("insertions").ValueKind);
+        Assert.Equal(JsonValueKind.Null, file.GetProperty("deletions").ValueKind);
     }
 
     private static JsonElement[] Commits(CallToolResult result) =>

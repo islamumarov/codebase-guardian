@@ -3,7 +3,7 @@ using Mcp.Events;
 
 namespace CodebaseGuardian.Watching;
 
-/// <summary>The Epic 1 part of the event catalog (spec section 5.5).</summary>
+/// <summary>The event catalog (spec section 5.5) that is always registered: Epic 1 plus scan.completed.</summary>
 public static class GuardianEvents
 {
     public static void Register(EventsOptions options)
@@ -76,6 +76,68 @@ public static class GuardianEvents
                   "suggestedSkill":{"type":"string"}}}
                 """),
         });
+
+        options.Define(new EventDefinition
+        {
+            Name = GuardianEventNames.ScanCompleted,
+            Description = "A full_scan finished. Read the Markdown report at reportUri. suggestedSkill is absent when the scan found nothing to act on.",
+            PayloadSchema = Obj("""
+                {"type":"object","properties":{
+                  "scanId":{"type":"string"},"reportUri":{"type":"string"},
+                  "secretFindings":{"type":"integer"},"vulnerablePackages":{"type":"integer"},
+                  "checksPassed":{"type":["boolean","null"]},"suggestedSkill":{"type":"string"}}}
+                """),
+        });
+    }
+
+    /// <summary>The Epic 2 part of the catalog; registered only when the GitHub integration is enabled.</summary>
+    public static void RegisterGitHub(EventsOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        const string Requires = " (requires a GitHub token and a github.com origin)";
+
+        options.Define(new EventDefinition
+        {
+            Name = GuardianEventNames.GithubIssueOpened,
+            Description = "A new issue was opened on the GitHub repository." + Requires,
+            InputSchema = Obj("""{"type":"object","properties":{"label":{"type":"string","description":"Only issues that carry this label."}}}"""),
+            PayloadSchema = Obj("""
+                {"type":"object","properties":{
+                  "number":{"type":"integer"},"title":{"type":"string"},"author":{"type":"string"},"url":{"type":"string"},
+                  "labels":{"type":"array","items":{"type":"string"}},"body":{"type":"string"},"suggestedSkill":{"type":"string"}}}
+                """),
+            Matches = (arguments, data) => !HasArgument(arguments, "label")
+                || Argument(arguments, "label") is { } label
+                && data["labels"] is JsonArray labels && labels.Any(l => AsString(l) == label),
+        });
+
+        options.Define(new EventDefinition
+        {
+            Name = GuardianEventNames.GithubPrCommentCreated,
+            Description = "A comment was added to a pull request, as a conversation comment or a review comment." + Requires,
+            InputSchema = Obj("""{"type":"object","properties":{"prNumber":{"type":"integer","description":"Only comments on this pull request."}}}"""),
+            PayloadSchema = Obj("""
+                {"type":"object","properties":{
+                  "prNumber":{"type":"integer"},"commentId":{"type":"integer"},"author":{"type":"string"},"body":{"type":"string"},
+                  "url":{"type":"string"},"path":{"type":@NS@},"line":{"type":["integer","null"]},"suggestedSkill":{"type":"string"}}}
+                """),
+            Matches = (arguments, data) => !HasArgument(arguments, "prNumber")
+                || AsInteger(arguments!["prNumber"]) is { } number && AsInteger(data["prNumber"]) == number,
+        });
+
+        options.Define(new EventDefinition
+        {
+            Name = GuardianEventNames.GithubCiFailed,
+            Description = "A GitHub Actions workflow run failed." + Requires,
+            InputSchema = Obj("""{"type":"object","properties":{"branch":{"type":"string","description":"Only runs on this branch."}}}"""),
+            PayloadSchema = Obj("""
+                {"type":"object","properties":{
+                  "runId":{"type":"integer"},"workflowName":{"type":"string"},"branch":{"type":"string"},"headSha":{"type":"string"},
+                  "url":{"type":"string"},"conclusion":{"type":"string"},"suggestedSkill":{"type":"string"}}}
+                """),
+            Matches = (arguments, data) => !HasArgument(arguments, "branch")
+                || Argument(arguments, "branch") is { } branch && AsString(data["branch"]) == branch,
+        });
     }
 
     private static EventDefinition CheckEvent(string name, string description, bool withSuggestedSkill)
@@ -103,6 +165,13 @@ public static class GuardianEvents
     /// <summary>The argument as a string; null when it is missing or not a string (a non-string never matches).</summary>
     private static string? Argument(JsonObject? arguments, string name) =>
         arguments is not null && arguments.TryGetPropertyValue(name, out var value) ? AsString(value) : null;
+
+    /// <summary>The node as an integer; null when it is not a JSON number with an integral value.</summary>
+    private static long? AsInteger(JsonNode? node) =>
+        node is JsonValue value && value.GetValueKind() == System.Text.Json.JsonValueKind.Number
+        && long.TryParse(value.ToJsonString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var number)
+            ? number
+            : null;
 
     private static string? AsString(JsonNode? node) =>
         node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;

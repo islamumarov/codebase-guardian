@@ -4,6 +4,7 @@ using CodebaseGuardian.Checks;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Hosting;
 using CodebaseGuardian.Processes;
+using CodebaseGuardian.Security;
 using CodebaseGuardian.Tests.Infrastructure;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
@@ -31,11 +32,14 @@ public class CheckRunnerTests
             options ??= new CheckOptions();
             var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = Repo.Path }));
             var resolver = new CheckCommandResolver(git, Options.Create(options));
-            Runner = new CheckRunner(Process, git, resolver, Events, Store, Options.Create(options), TimeProvider.System);
+            Runner = new CheckRunner(Process, git, resolver, Events, Store, Options.Create(options), Scanner(git), TimeProvider.System);
         }
 
         public void Dispose() => Repo.Dispose();
     }
+
+    private static SecretScanner Scanner(IGitRepository? git) =>
+        new(git!, Microsoft.Extensions.Logging.Abstractions.NullLogger<SecretScanner>.Instance); // redaction never touches git
 
     private sealed class RecordingPublisher : IEventPublisher
     {
@@ -80,6 +84,28 @@ public class CheckRunnerTests
     }
 
     [Fact]
+    public async Task Secrets_in_the_output_are_redacted_in_the_stored_run_and_the_published_events()
+    {
+        using var h = new Harness();
+        var token = FakeSecrets.GitHubToken();
+        h.Process.On(IsCheck, FakeProcessRunner.Result(1,
+            $"  Failed Demo.T.Leaks({token}) [2 ms]\nconnecting with {token}\nFailed!  - Failed: 1, Passed: 0, Total: 1\n", $"stderr {token}"));
+
+        var run = await h.Runner.RunAsync("tool", null, null, Ct);
+
+        var redacted = Redactor.Redact(token);
+        Assert.DoesNotContain(token, run.Log);
+        Assert.Contains(redacted, run.Log);
+        Assert.DoesNotContain(token, run.Summary);
+        Assert.All(run.FailedTests, test => Assert.DoesNotContain(token, test));
+        Assert.Contains(run.FailedTests, test => test.Contains(redacted));
+        Assert.Same(run, h.Store.Latest);
+        var failed = h.Events.Events.Single(e => e.Name == "checks.failed").Data;
+        Assert.DoesNotContain(token, failed.ToJsonString());
+        Assert.Contains(redacted, failed["failedTests"]!.ToJsonString());
+    }
+
+    [Fact]
     public async Task A_passing_run_publishes_only_completed()
     {
         using var h = new Harness();
@@ -117,7 +143,7 @@ public class CheckRunnerTests
         var missing = new ExecutableNotFoundException("no-such-tool", new InvalidOperationException());
         var runner = new CheckRunner(new ThrowingRunner(missing), new GitRepository(new ProcessRunner(),
             Options.Create(new GuardianOptions { RepositoryPath = h.Repo.Path })), new FixedResolver(), h.Events, h.Store,
-            Options.Create(new CheckOptions()), TimeProvider.System);
+            Options.Create(new CheckOptions()), Scanner(null), TimeProvider.System);
 
         var run = await runner.RunAsync("tool", null, null, Ct);
 
@@ -166,6 +192,38 @@ public class CheckRunnerTests
     private sealed class SyncProgress(List<string> messages) : IProgress<string>
     {
         public void Report(string value) => messages.Add(value);
+    }
+
+    private sealed class CancelThenReturnRunner(CancellationTokenSource source) : IProcessRunner
+    {
+        // A process that exits just as the caller cancels: the result arrives, the cancellation has been requested.
+        public Task<ProcessResult> RunAsync(ProcessSpec spec, CancellationToken cancellationToken = default)
+        {
+            source.Cancel();
+            return Task.FromResult(FakeProcessRunner.Result(0));
+        }
+    }
+
+    [Fact]
+    public async Task A_cancelled_run_stores_nothing_publishes_nothing_and_releases_the_lock()
+    {
+        using var h = new Harness();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = h.Repo.Path }));
+        var runner = new CheckRunner(
+            new CancelThenReturnRunner(cts), git, new CheckCommandResolver(git, Options.Create(new CheckOptions())),
+            h.Events, h.Store, Options.Create(new CheckOptions()), Scanner(git), TimeProvider.System);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runner.RunAsync("tool", null, null, cts.Token));
+
+        Assert.Null(h.Store.Latest);
+        Assert.Empty(h.Events.Events);
+        // The one-at-a-time lock is free again.
+        h.Process.On(IsCheck, FakeProcessRunner.Result(0));
+        var again = new CheckRunner(
+            h.Process, git, new CheckCommandResolver(git, Options.Create(new CheckOptions())),
+            h.Events, h.Store, Options.Create(new CheckOptions()), Scanner(git), TimeProvider.System);
+        Assert.True((await again.RunAsync("tool", null, null, Ct)).Passed);
     }
 
     [Fact]

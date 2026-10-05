@@ -61,6 +61,7 @@ public sealed class ProcessRunner : IProcessRunner
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
 
         var timedOut = false;
+        var abandonedDrain = false;
         try
         {
             await process.WaitForExitAsync(linked.Token).ConfigureAwait(false);
@@ -85,7 +86,22 @@ public sealed class ProcessRunner : IProcessRunner
         }
         else
         {
-            await drained.ConfigureAwait(false);
+            // The process exited, but a descendant (a backgrounded server) can still hold a pipe open. The timeout and
+            // the caller's token bound this wait too.
+            try
+            {
+                await drained.WaitAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                // Keep the exit code; the output captured so far is dropped with the unfinished readers.
+                abandonedDrain = true;
+            }
         }
 
         var (output, outputTruncated) = standardOutput.IsCompletedSuccessfully ? standardOutput.Result : (string.Empty, false);
@@ -97,7 +113,7 @@ public sealed class ProcessRunner : IProcessRunner
             output,
             error,
             timedOut,
-            outputTruncated || errorTruncated,
+            outputTruncated || errorTruncated || abandonedDrain,
             stopwatch.Elapsed);
     }
 

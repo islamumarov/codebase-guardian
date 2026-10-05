@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using CodebaseGuardian.Checks;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -16,7 +17,7 @@ public sealed record CheckRunResult(
 }
 
 [McpServerToolType]
-public sealed class CheckTools(ICheckRunner runner)
+public sealed class CheckTools(ICheckRunner runner, ILogger<CheckTools> logger)
 {
     [McpServerTool(Name = "run_checks", ReadOnly = false, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Runs the project's build and test command (configured by the server operator, or detected from the repository) and returns the result: pass or fail, a one-line summary, the names of failed tests and a guardian:// link to the full log. Use it after changing code, or to find out whether the project currently builds and its tests pass. Runs one at a time and can take minutes.")]
@@ -27,7 +28,7 @@ public sealed class CheckTools(ICheckRunner runner)
             {
                 var run = await runner.RunAsync(
                     "tool", null,
-                    new ProgressRelay(progress),
+                    new ProgressRelay(progress, logger),
                     cancellationToken);
                 return CheckRunResult.From(run);
             }

@@ -1,7 +1,12 @@
 using System.Text.Json.Nodes;
+using CodebaseGuardian.Git;
+using CodebaseGuardian.Hosting;
+using CodebaseGuardian.Processes;
 using CodebaseGuardian.Security;
 using CodebaseGuardian.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace CodebaseGuardian.Tests.App;
 
@@ -20,6 +25,97 @@ public class SecretScannerTests
         repo.WriteFile("README.md", "x");
         repo.Commit("initial");
         return repo;
+    }
+
+    private sealed class RecordingLogger : ILogger<SecretScanner>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    [Fact]
+    public async Task A_staged_patch_larger_than_the_scan_limit_logs_a_warning_without_patch_content()
+    {
+        using var repo = RepoWithCommit();
+        var filler = string.Concat(Enumerable.Repeat("filler line of harmless text\n", 200_000)); // ~5.8 MB
+        repo.WriteFile("big.txt", filler + $"key = {FakeSecrets.AwsAccessKeyId()}\n");
+        repo.Git("add", "big.txt");
+        var logger = new RecordingLogger();
+        var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = repo.Path }));
+
+        var findings = await new SecretScanner(git, logger).ScanStagedAsync(Ct);
+
+        Assert.Empty(findings); // the secret is past the cap: this is the false all-clear the warning must flag
+        var warning = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
+        Assert.Contains("only the first", warning.Message);
+        Assert.DoesNotContain("filler", warning.Message);
+        Assert.DoesNotContain(FakeSecrets.AwsAccessKeyId(), warning.Message);
+    }
+
+    [Fact]
+    public async Task A_commit_patch_larger_than_the_scan_limit_logs_a_warning()
+    {
+        using var repo = RepoWithCommit();
+        repo.WriteFile("big.txt", string.Concat(Enumerable.Repeat("filler line of harmless text\n", 200_000)));
+        var sha = repo.Commit("big");
+        var logger = new RecordingLogger();
+        var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = repo.Path }));
+
+        await new SecretScanner(git, logger).ScanCommitAsync(sha, Ct);
+
+        var warning = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
+        Assert.Contains("only the first", warning.Message);
+        Assert.Contains(sha, warning.Message);
+    }
+
+    [Fact]
+    public async Task A_small_patch_logs_no_warning()
+    {
+        using var repo = RepoWithCommit();
+        repo.WriteFile("a.txt", "hello\n");
+        repo.Git("add", "a.txt");
+        var logger = new RecordingLogger();
+        var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = repo.Path }));
+
+        await new SecretScanner(git, logger).ScanStagedAsync(Ct);
+
+        Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task Working_tree_scan_does_not_follow_symlinks_out_of_the_repository()
+    {
+        using var repo = RepoWithCommit();
+        var outside = Path.Combine(Path.GetTempPath(), $"guardian-outside-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(outside, $"key = {FakeSecrets.AwsAccessKeyId()}\n", Ct);
+        try
+        {
+            try
+            {
+                File.CreateSymbolicLink(Path.Combine(repo.Path, "tracked-link.txt"), outside);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                Assert.Skip("Symbolic links cannot be created here.");
+            }
+
+            repo.Git("add", "tracked-link.txt");
+            repo.Commit("link");
+            File.CreateSymbolicLink(Path.Combine(repo.Path, "untracked-link.txt"), outside);
+            repo.WriteFile("real.txt", $"key = {FakeSecrets.AwsAccessKeyId()}\n");
+            await using var server = await StartAsync(repo);
+
+            var findings = await Scanner(server).ScanWorkingTreeAsync(Ct);
+
+            Assert.Equal(["real.txt"], findings.Select(f => f.Path)); // the control: ordinary files are still scanned
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
     }
 
     [Fact]

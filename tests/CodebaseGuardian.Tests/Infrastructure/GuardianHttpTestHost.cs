@@ -97,6 +97,26 @@ public sealed class GuardianHttpTestHost : IAsyncDisposable
         return client;
     }
 
+    /// <summary>Connects with <c>Authorization: Bearer &lt;token&gt;</c>.</summary>
+    public async Task<McpClient> ConnectAsync(string bearerToken, McpClientOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(bearerToken);
+        var client = await McpClient.CreateAsync(
+            new HttpClientTransport(new HttpClientTransportOptions
+            {
+                Endpoint = Endpoint,
+                TransportMode = HttpTransportMode.StreamableHttp,
+                AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = $"Bearer {bearerToken}" },
+            }),
+            options,
+            cancellationToken: cancellationToken);
+        _clients.Add(client);
+        return client;
+    }
+
+    /// <summary>A plain client rooted at <see cref="BaseAddress"/>, with no authorization header. The caller disposes it.</summary>
+    public HttpClient CreateHttpClient() => new() { BaseAddress = BaseAddress };
+
     /// <summary>Stops the server while clients stay connected, as an operator shutting the process down would.</summary>
     public async Task StopServerAsync()
     {

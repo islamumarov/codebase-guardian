@@ -13,11 +13,10 @@ It is built on the Model Context Protocol `2026-07-28` revision, the MCP C# SDK 
 
 - **MCP Events**: `events/list`, `events/poll`, and `events/stream` push delivery
 - **Skills extension** (`io.modelcontextprotocol/skills`, SEP-2640)
-- **Tools** and **Resources**, with the Tasks extension planned for long-running scans
+- **Tools** and **Resources**, with the **Tasks** extension (`io.modelcontextprotocol/tasks`) for long-running scans
 - **Stateless request/response core**: stdio and stateless Streamable HTTP
 
-> **Status:** Epic 1 (the local Guardian) is complete and tested. GitHub integration, webhook delivery and Tasks
-> (Epics 2 and 3) are in progress; the [Roadmap](#roadmap) lists what is still planned. The design is in
+> **Status:** Feature complete for v1 (see [docs/backlog](docs/backlog/README.md)). The design is in
 > [docs/specs/2026-10-04-codebase-guardian-design.md](docs/specs/2026-10-04-codebase-guardian-design.md).
 
 ---
@@ -33,7 +32,7 @@ Traditional AI coding assistants are **reactive**: they act only when a human as
 | Complex workflows (security audit, bug triage, dependency upgrades) are hard to prompt reliably | Ships five ready-to-use **Agent Skills** that encode the procedure step by step and name the exact tools and resources to use |
 | An event alone does not say what to do next | Each event carries a `suggestedSkill` URI, so the agent knows which workflow to load |
 | Skill content could be tampered with in transit | Every skill file is listed with its size and SHA-256 digest, so clients can verify what they load |
-| Long-running analysis blocks the conversation | Designed for the **Tasks** extension: long scans will return a handle instead of blocking (planned, Epic 3) |
+| Long-running analysis blocks the conversation | The **Tasks** extension: `full_scan` (and, optionally, `run_checks` and `audit_dependencies`) return a task handle instead of blocking |
 | Scaling MCP servers used to require sticky sessions | Built on the **stateless `2026-07-28`** protocol: request/response methods need no session affinity |
 | Every team reinvents the same "watch this repo" logic | One reusable MCP server that any MCP client can connect to |
 
@@ -45,9 +44,9 @@ Traditional AI coding assistants are **reactive**: they act only when a human as
 - When a dependency manifest changes, the `dependency-hygiene` skill audits for vulnerable and outdated packages.
 - When the build or tests fail (`checks.failed`), the `bug-triage` skill reads the stored log, reproduces the failure and
   isolates the commit that caused it.
-
-**Planned (Epic 2):** react to new GitHub issues, PR comments and failed CI runs, and file an issue, comment on a PR or open a
-pull request from an already pushed branch. Every outward-facing action asks for confirmation first.
+- When a `full_scan` finishes (`scan.completed`), the event links the Markdown report and names the skill to load next.
+- With a GitHub token, new issues, PR comments and failed CI runs arrive as events, and the agent can file an issue, comment on
+  a PR or open a pull request from an already pushed branch. Every outward-facing action asks for confirmation first.
 
 This is the difference between an AI that answers questions and an AI that **helps run the engineering process**.
 
@@ -59,10 +58,11 @@ This is the difference between an AI that answers questions and an AI that **hel
 
 | MCP feature | How the Guardian uses it |
 |---|---|
-| Tools | Inspect the repository, summarize diffs, run checks, scan for secrets, audit dependencies, `poll_events` fallback |
-| Resources | `guardian://` live repo status, recent commits, check runs and logs; `skill://` skill files |
+| Tools | Inspect the repository, summarize diffs, run checks, scan for secrets, audit dependencies, `full_scan`, GitHub actions, `poll_events` fallback |
+| Resources | `guardian://` live repo status, recent commits, check runs and logs, scan reports; `skill://` skill files |
 | Skills (`io.modelcontextprotocol/skills`) | `skills/list`, `skills/get`, `resources/directory/read`; five bundled skills |
-| Events (Triggers & Events, **draft**) | `events/list`, `events/poll`, `events/stream` |
+| Tasks (`io.modelcontextprotocol/tasks`) | `full_scan` always runs as a task; `run_checks` and `audit_dependencies` may |
+| Events (Triggers & Events, **draft**) | `events/list`, `events/poll`, `events/stream`, `events/subscribe` (webhooks, authenticated HTTP only) |
 | Stateless 2026-07-28 core | stdio and stateless Streamable HTTP |
 
 ### Bundled skills
@@ -153,10 +153,12 @@ Full contract: spec [section 5](docs/specs/2026-10-04-codebase-guardian-design.m
 | `run_checks` | Run the build/test command, store the log, emit events |
 | `scan_secrets` | Scan working tree, staged changes or a commit range; output is redacted |
 | `audit_dependencies` | Outdated and vulnerable packages (NuGet and npm) |
+| `full_scan` | Secrets, dependencies and checks in one run; stores a Markdown report. Runs as an MCP task |
+| `create_issue`, `comment_on_pr`, `open_pull_request` | GitHub actions; each asks the user to confirm first (needs [GitHub](#github)) |
 | `poll_events` | Fallback for clients without `events/*` |
 
 **Resources**: `guardian://repo/status`, `guardian://repo/commits/recent`, `guardian://checks/latest`,
-`guardian://checks/{runId}/log`, and the skill files under `skill://<skill>/<file>`.
+`guardian://checks/{runId}/log`, `guardian://scans/{scanId}/report`, and the skill files under `skill://<skill>/<file>`.
 
 **Events**
 
@@ -169,8 +171,79 @@ Full contract: spec [section 5](docs/specs/2026-10-04-codebase-guardian-design.m
 | `checks.completed` | A check run finished | none |
 | `checks.failed` | A check run failed | `bug-triage` |
 | `security.secret_detected` | Secret found in a new commit or scan | `security-audit` |
+| `scan.completed` | A `full_scan` finished | `security-audit` with secrets, else `dependency-hygiene` with vulnerable packages, else none |
+| `github.issue.opened` | A new issue on the GitHub repository | `bug-triage` |
+| `github.pr.comment.created` | A comment on a pull request | `pr-review` |
+| `github.ci.failed` | A GitHub Actions run failed | `bug-triage` |
+
+The three `github.*` events exist only when [GitHub](#github) is enabled. `scan.completed` carries `scanId`, `reportUri`,
+`secretFindings`, `vulnerablePackages`, `checksPassed` (null when no checks ran) and, when there is something to act on,
+`suggestedSkill`.
 
 **Skills**: `guardian` (load first; event-to-skill map), `security-audit`, `dependency-hygiene`, `bug-triage`, `pr-review`.
+
+## Tasks and `full_scan`
+
+Long-running tools use the MCP Tasks extension (`io.modelcontextprotocol/tasks`). The client opts in by declaring that
+extension in its `initialize` capabilities (`capabilities.extensions["io.modelcontextprotocol/tasks"]`) and calls the tool
+as a task; the server answers with a task handle and the client polls `tasks/get` (and can `tasks/cancel`).
+
+| Tool | Task mode |
+|---|---|
+| `full_scan` | **Required**: a client without the extension gets error `-32021` (missing required client capability) |
+| `run_checks`, `audit_dependencies` | Optional: a plain call returns the result directly, a task call returns a handle |
+| everything else | Synchronous |
+
+`full_scan(includeChecks = true)` scans the working tree for secrets, audits dependencies (outdated ones included) and runs
+the check command, in that order, reporting progress `secrets`, `dependencies`, `checks`. A step that fails is recorded under
+`## Errors` in the report and the scan continues. The result is `{scanId, reportUri, secretFindings, vulnerablePackages,
+outdatedPackages, checksPassed, durationMs}`; read `reportUri` (`guardian://scans/{scanId}/report`, `text/markdown`) for the
+details. Secret values in the report are always redacted. The last 20 reports are kept in memory, and `scan.completed` is
+published when a scan ends. If the client has no task support, call `scan_secrets`, `audit_dependencies` and `run_checks`
+instead.
+
+## GitHub
+
+GitHub support is on by default but does nothing without a token and a github.com `origin` remote. The token comes from the
+`GITHUB_TOKEN` environment variable, otherwise from `gh auth token` (run `gh auth login` once). Settings:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `Guardian:GitHub:Enabled` | `true` | `false` removes the `github.*` events and makes the GitHub tools fail with a clear error |
+| `Guardian:GitHub:PollEnabled` | `true` | Poll GitHub for issues, PR comments and failed runs |
+| `Guardian:GitHub:PollIntervalSeconds` | `60` | Poll interval, at least 15 |
+| `Guardian:GitHub:Owner`, `Guardian:GitHub:Repository` | from `origin` | Override the repository |
+| `Guardian:GitHub:ApiBaseUrl` | `https://api.github.com` | For GitHub Enterprise |
+
+```bash
+GITHUB_TOKEN=<token> dotnet run --project src/CodebaseGuardian -- --repo .
+# or: gh auth login, then run as usual; disable with  --Guardian:GitHub:Enabled=false
+```
+
+`create_issue`, `comment_on_pr` and `open_pull_request` ask the user to confirm (MCP elicitation, or an explicit `confirm: true`
+argument for clients without it) before anything is sent, and text that leaves the machine is refused if it contains a secret.
+
+## Webhooks
+
+Besides `events/stream` and `events/poll`, a client can have events POSTed to its own HTTPS endpoint with `events/subscribe`
+(Standard Webhooks signatures, endpoint verification, no redirects, private addresses blocked). Webhooks are offered only on
+the HTTP transport and only with at least one API key, so a client without credentials cannot make the server call out.
+
+```bash
+export GUARDIAN__Http__ApiKeys__ci="$(head -c 48 /dev/urandom | base64 | tr -d '=+/')"   # principal "ci", at least 32 characters
+dotnet run --project src/CodebaseGuardian -- --transport http --repo . --urls http://127.0.0.1:5199
+```
+
+Clients then send `Authorization: Bearer <key>`. When a key is configured every HTTP request needs it. Settings:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `Guardian:Http:ApiKeys:<principal>` | none | API key per principal, at least 32 characters |
+| `Guardian:Webhooks:Enabled` | `true` | Set to `false` to stop offering webhooks even with API keys |
+| `Guardian:Webhooks:AllowInsecureLoopback` | `false` | **Development only**: allows `http://` callback URLs and loopback or private targets |
+
+> **Warning:** never set `Guardian:Webhooks:AllowInsecureLoopback=true` on a shared or production host. It turns off the
+> HTTPS requirement and the private-address (SSRF) guard for webhook callbacks.
 
 ## Demo client
 
@@ -202,17 +275,22 @@ Spec [section 7](docs/specs/2026-10-04-codebase-guardian-design.md).
 - No shell execution: every external process (`git`, `dotnet`, `npm`) runs with an argument list; model-supplied revisions are validated.
 - Repo-relative paths are validated against `..` escapes; resource reads resolve only catalog entries and known run ids.
 - Secret values are redacted everywhere: tool results, events, logs.
-- **HTTP is loopback-only** by default (binds `127.0.0.1`). Binding another address needs `Guardian:HttpAllowRemote=true`, and
-  the HTTP transport has **no authentication yet**: anyone who can reach the port can read the repository and run its checks.
+- **HTTP is loopback-only** by default (binds `127.0.0.1`). Binding another address needs `Guardian:HttpAllowRemote=true` and at
+  least one API key. Without any key the HTTP transport has **no authentication**: anyone who can reach the port can read the
+  repository and run its checks. API keys are compared as hashes and never logged.
+- Webhook callbacks are HTTPS-only, never follow redirects and cannot target private addresses, unless the development flag
+  `Guardian:Webhooks:AllowInsecureLoopback` is set (see [Webhooks](#webhooks)).
+- GitHub actions ask for confirmation, and outgoing text containing a secret is refused.
 - **DNS-rebinding guard**: a request whose `Host` or `Origin` is not loopback is answered with 403 (remote mode drops only the
   `Host` restriction; a non-loopback `Origin` is still refused).
 
 ## Limitations
 
 - Events are a **draft** (Triggers & Events working group sketch); the wire format may change.
-- State (event log, check runs, watcher cursors) lives in a single process and is lost on restart.
+- State (event log, check runs, scan reports, task store, webhook subscriptions) lives in a single process and is lost on restart.
 - Dependency auditing covers NuGet and npm only.
-- No GitHub tools or events, webhook delivery or Tasks yet (Epics 2 and 3; see [Roadmap](#roadmap)).
+- GitHub support covers github.com repositories and polls for events; there is no inbound GitHub webhook.
+- The `create_issue`, `comment_on_pr` and `open_pull_request` tools cannot run as tasks (SDK 2.2.0 cannot combine them with elicitation).
 - Conformance: the three Skills scenarios of the MCP conformance suite pass; the base 2026-07-28 suite passes everything that does
   not need the suite's own fixtures. Details: [docs/reference/conformance.md](docs/reference/conformance.md).
 
@@ -221,8 +299,8 @@ Spec [section 7](docs/specs/2026-10-04-codebase-guardian-design.md).
 | Epic | Delivers | State |
 |---|---|---|
 | 1. Core Guardian (local) | Git layer, repo tools and resources, Skills, Events (poll/stream), repo watcher, checks, secret scan, dependency audit, stateless HTTP, demo client | **Done** |
-| 2. GitHub + webhooks | GitHub client, `create_issue` / `comment_on_pr` / `open_pull_request` with confirmation, `github.issue.opened` / `github.pr.comment.created` / `github.ci.failed` events, HTTP auth, signed webhook delivery via `events/subscribe` | In progress (GitHub REST client done) |
-| 3. Tasks | Tasks extension, task-capable `run_checks` and `audit_dependencies`, `full_scan` with a report resource | Planned |
+| 2. GitHub + webhooks | GitHub client, `create_issue` / `comment_on_pr` / `open_pull_request` with confirmation, `github.issue.opened` / `github.pr.comment.created` / `github.ci.failed` events, HTTP auth, signed webhook delivery via `events/subscribe` | **Done** |
+| 3. Tasks | Tasks extension, task-capable `run_checks` and `audit_dependencies`, `full_scan` with a report resource and `scan.completed` | **Done** |
 
 Non-goals for v1: shared state across instances, ecosystems beyond NuGet and npm, auto-fixing code or pushing commits.
 The agent makes changes with its own tools; the Guardian only opens PRs from branches that already exist on the remote.
@@ -240,6 +318,11 @@ flowchart LR
     Tools --> Checks[Checks: build/test runner]
     Tools --> Security[Security: secret scanner]
     Tools --> Deps[Dependencies: auditor]
+    Tools --> Scan[Scanning: full_scan and report store]
+    Scan --> Security
+    Scan --> Deps
+    Scan --> Checks
+    Scan -->|publish| Events
     Resources --> Git
     Resources --> Checks
     Watcher[Watching: repository watcher] --> Git
@@ -260,7 +343,7 @@ dotnet test        # xunit.v3; no network needed, git tests use real temporary r
 ```
 src/Mcp.Skills        Skills extension library
 src/Mcp.Events        Events extension library
-src/CodebaseGuardian  the server (Hosting, Git, Watching, Checks, Security, Dependencies, Tools, Resources, skills)
+src/CodebaseGuardian  the server (Hosting, Git, Watching, Checks, Security, Dependencies, Scanning, GitHub, Tools, Resources, skills)
 samples/GuardianWatch demo client
 tests/                CodebaseGuardian.Tests (includes the end-to-end scenario test)
 docs/                 spec, backlog, reference notes

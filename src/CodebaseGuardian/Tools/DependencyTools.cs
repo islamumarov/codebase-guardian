@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using CodebaseGuardian.Dependencies;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -8,7 +9,7 @@ using ModelContextProtocol.Server;
 namespace CodebaseGuardian.Tools;
 
 [McpServerToolType]
-public sealed class DependencyTools(IDependencyAuditor auditor)
+public sealed class DependencyTools(IDependencyAuditor auditor, ILogger<DependencyTools> logger)
 {
     // Nulls are emitted: the advertised output schema lists every property (nullable ones included) as required.
     private static readonly JsonSerializerOptions StructuredOptions = new(JsonSerializerDefaults.Web);
@@ -21,7 +22,7 @@ public sealed class DependencyTools(IDependencyAuditor auditor)
         CancellationToken cancellationToken = default) =>
         ToolErrors.RunAsync(async () =>
         {
-            var report = await auditor.AuditAsync(includeOutdated, new ProgressRelay(progress), cancellationToken);
+            var report = await auditor.AuditAsync(includeOutdated, new ProgressRelay(progress, logger), cancellationToken);
             return new CallToolResult
             {
                 Content = [new TextContentBlock { Text = Summarize(report) }],

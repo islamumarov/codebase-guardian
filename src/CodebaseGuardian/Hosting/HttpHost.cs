@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
@@ -22,7 +23,8 @@ public static class HttpHost
     /// <see cref="GuardianOptions.Transport"/> is forced to <see cref="GuardianTransport.Http"/>.
     /// </summary>
     /// <param name="args">The raw command line; it is normalized here, exactly once.</param>
-    /// <exception cref="HttpBindingException">The URL is empty or not loopback and <see cref="GuardianOptions.HttpAllowRemote"/> is not set.</exception>
+    /// <exception cref="HttpBindingException">The URL is empty, or may bind a non-loopback address without both
+    /// <see cref="GuardianOptions.HttpAllowRemote"/> and at least one <c>Guardian:Http:ApiKeys</c> entry.</exception>
     public static WebApplication Build(string[] args, Action<IServiceCollection>? configureServices = null)
     {
         ArgumentNullException.ThrowIfNull(args);
@@ -42,7 +44,10 @@ public static class HttpHost
 
         var guardian = new GuardianOptions();
         builder.Configuration.GetSection(GuardianOptions.SectionName).Bind(guardian);
-        EnsureLocalBinding(guardian, builder.Configuration);
+        var auth = new HttpAuthOptions();
+        builder.Configuration.GetSection(HttpAuthOptions.SectionName).Bind(auth);
+        var authenticated = auth.ApiKeys.Count > 0;
+        EnsureLocalBinding(guardian, builder.Configuration, guardian.HttpAllowRemote && authenticated);
 
         builder.WebHost.UseUrls(guardian.HttpUrl);
 
@@ -53,12 +58,30 @@ public static class HttpHost
         builder.Services
             .AddCodebaseGuardian(builder.Configuration)
             .WithHttpTransport(o => o.SessionMode = HttpServerSessionMode.Stateless);
+        if (authenticated)
+        {
+            builder.Services
+                .AddAuthentication(ApiKeyAuthenticationHandler.SchemeName)
+                .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyAuthenticationHandler.SchemeName, null);
+            builder.Services.AddAuthorization();
+        }
+
         configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
         app.Use((context, next) => RejectRebinding(context, next, guardian.HttpAllowRemote));
 
-        app.MapMcp("/mcp");
+        if (authenticated)
+        {
+            app.UseAuthentication();
+            app.UseAuthorization();
+            app.MapMcp("/mcp").RequireAuthorization();
+        }
+        else
+        {
+            app.MapMcp("/mcp");
+        }
+
         app.MapGet("/healthz", () => Results.Text("ok"));
         return app;
     }
@@ -74,7 +97,8 @@ public static class HttpHost
 
             // Backstop: Kestrel can also be configured outside Guardian:HttpUrl (ASPNETCORE_HTTP_PORTS, ...). What counts is
             // where it actually listens.
-            var allowRemote = app.Services.GetRequiredService<IOptions<GuardianOptions>>().Value.HttpAllowRemote;
+            var allowRemote = app.Services.GetRequiredService<IOptions<GuardianOptions>>().Value.HttpAllowRemote
+                && app.Services.GetRequiredService<IOptions<HttpAuthOptions>>().Value.ApiKeys.Count > 0;
             try
             {
                 VerifyBoundAddresses(app.Urls, allowRemote);
@@ -95,9 +119,9 @@ public static class HttpHost
         }
     }
 
-    internal static void VerifyBoundAddresses(IEnumerable<string> addresses, bool allowRemote)
+    internal static void VerifyBoundAddresses(IEnumerable<string> addresses, bool remoteAllowed)
     {
-        if (allowRemote)
+        if (remoteAllowed)
         {
             return;
         }
@@ -112,9 +136,9 @@ public static class HttpHost
     }
 
     private static string RefusalMessage(string what) =>
-        $"{what}, which is not a loopback address. The HTTP transport has no authentication yet, so " +
-        "anyone who can reach that port could read the repository and run its checks. Bind 127.0.0.1, ::1 or localhost, " +
-        "or set Guardian:HttpAllowRemote=true (GUARDIAN__HttpAllowRemote=true) to accept the risk.";
+        $"{what}, which is not a loopback address. Without authentication anyone who can reach that port could read " +
+        "the repository and run its checks. Bind 127.0.0.1, ::1 or localhost, or set both Guardian:HttpAllowRemote=true " +
+        "(GUARDIAN__HttpAllowRemote=true) and at least one API key in Guardian:Http:ApiKeys (Guardian:Http:ApiKeys:<principal>=<key>).";
 
     // DNS rebinding: a web page can make a victim's browser reach 127.0.0.1 under an attacker's hostname. Browsers send that
     // hostname in Host (and the page's origin in Origin), so a local-only server refuses anything that is not loopback.
@@ -133,14 +157,15 @@ public static class HttpHost
         return Task.CompletedTask;
     }
 
-    private static void EnsureLocalBinding(GuardianOptions options, IConfiguration configuration)
+    private static void EnsureLocalBinding(GuardianOptions options, IConfiguration configuration, bool remoteAllowed)
     {
         if (string.IsNullOrWhiteSpace(options.HttpUrl))
         {
             throw new HttpBindingException("Guardian:HttpUrl must not be empty.");
         }
 
-        if (options.HttpAllowRemote)
+        // Remote binding needs HttpAllowRemote and an API key; every path that can bind non-loopback counts as remote.
+        if (remoteAllowed)
         {
             return;
         }

@@ -2,6 +2,8 @@
 
 The implementation plan is [BACKLOG.md](BACKLOG.md). It implements the design spec [docs/specs/2026-10-04-codebase-guardian-design.md](../specs/2026-10-04-codebase-guardian-design.md); where they disagree, the spec wins.
 
+v1 is feature complete (tasks 1 to 23); task-level detail stays in [STATUS.md](STATUS.md).
+
 Tasks run strictly in order. Each one ends with `dotnet test` green and its own commit.
 
 - [STATUS.md](STATUS.md): which tasks are complete, plus every ruling and deferred finding. This is the durable record.

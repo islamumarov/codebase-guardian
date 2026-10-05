@@ -45,6 +45,46 @@ public sealed partial class InMemoryEventLog : IEventLog, IEventPublisher
 
     public string CursorAfter(EventEnvelope envelope) => EventCursor.Encode(_epoch, envelope.Sequence);
 
+    public string CursorAt(long sequence) => EventCursor.Encode(_epoch, sequence);
+
+    public (long Sequence, bool Truncated) Seek(string? cursor, TimeSpan? maxAge)
+    {
+        (Guid Epoch, long Sequence)? decoded = cursor is null ? null : EventCursor.Decode(cursor);
+        lock (_gate)
+        {
+            Prune();
+            if (decoded is null) return (_head, false);
+
+            var floor = OldestSequenceMinusOne();
+            long after;
+            var truncated = false;
+            if (decoded.Value.Epoch != _epoch)
+            {
+                truncated = true;
+                after = floor;
+            }
+            else
+            {
+                after = decoded.Value.Sequence;
+                if (after > _head) return (_head, true);
+                if (after < floor) { truncated = true; after = floor; }
+            }
+
+            if (maxAge is { } age)
+            {
+                // Skip only the contiguous prefix of too-old events, so Seek never passes an event Read would return.
+                var cutoff = _time.GetUtcNow() - age;
+                for (var i = (int)(after - floor); i < _events.Count && _events[i].Timestamp < cutoff; i++)
+                {
+                    after = _events[i].Sequence;
+                    truncated = true;
+                }
+            }
+
+            return (after, truncated);
+        }
+    }
+
     /// <summary>
     /// Decodes the sequence only; the epoch is NOT checked. Stream loops must pass a cursor returned by
     /// <see cref="Read"/> (which is epoch-checked and normalised), not a raw client cursor.

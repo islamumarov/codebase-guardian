@@ -10,7 +10,8 @@ public sealed partial record GitHubRepositoryRef(string Owner, string Name)
     [GeneratedRegex(SegmentPattern)]
     private static partial Regex Segment();
 
-    internal static bool IsValidSegment(string value) => Segment().IsMatch(value);
+    // "." and ".." match the pattern but would turn "repos/{owner}/{name}" into a different API path that receives the token.
+    internal static bool IsValidSegment(string value) => value is not ("." or "..") && Segment().IsMatch(value);
 
     /// <summary>
     /// Accepts <c>https://github.com/o/r(.git)</c> (also with a user), <c>git@github.com:o/r(.git)</c> and

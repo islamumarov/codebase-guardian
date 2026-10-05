@@ -1,6 +1,6 @@
 ---
 name: "bug-triage"
-description: "Find out why checks fail. Use when a checks.failed event arrives or the user reports a failing build or test. Reads the check log, reproduces with run_checks, isolates the cause with recent_commits and diff_summary and writes an issue report."
+description: "Find out why checks or CI fail. Use when a checks.failed, github.ci.failed or github.issue.opened event arrives or the user reports a failing build. Reproduces with run_checks, isolates the cause with recent_commits and diff_summary and files an issue report."
 license: "MIT"
 metadata:
   author: "codebase-guardian"
@@ -9,7 +9,7 @@ metadata:
 
 # Bug triage
 
-Use this when `checks.failed` arrives, or when the user reports that the build or tests fail.
+Use this when `checks.failed`, `github.ci.failed` or `github.issue.opened` arrives, or when the user reports that the build or tests fail.
 
 ## Steps
 
@@ -18,8 +18,11 @@ Use this when `checks.failed` arrives, or when the user reports that the build o
 3. Reproduce. Call `run_checks` and compare the result with the event. Runs are one at a time and can take minutes.
 4. Isolate the change. Call `recent_commits` to see what landed before the failure, then `diff_summary` with `from` and `to` set to the suspect range, or just `from` to compare the working tree. Match the changed files with the failing tests and the first error.
 5. Classify with [the triage checklist](references/triage-checklist.md): regression (a recent change broke it), flaky (it passes on a second run with no change) or environment (toolchain, network, missing configuration).
-6. Write the report using [the issue template](assets/issue-template.md). Fill every section; write "unknown" rather than guessing.
-7. Offer next steps: a fix you can make, or what the user must decide. Do not change code or commit before the user agrees.
+6. For `github.ci.failed`, open the run `url` from the payload for the GitHub log, then map `headSha` to the local history: `recent_commits` shows whether the commit is here, and `diff_summary` with `to` set to `headSha` shows what it changed. A `headSha` that is not in the local history means you have not fetched it; say so.
+7. For `github.issue.opened`, read `title`, `labels` and `body`, then try to reproduce the problem with `run_checks`. If it does not reproduce, say what you tried instead of closing the question.
+8. Write the report using [the issue template](assets/issue-template.md). Fill every section; write "unknown" rather than guessing.
+9. To file the report on GitHub, call `create_issue` with the report as the body. The server asks the user to confirm before anything is written. Never include secrets or whole logs.
+10. Offer next steps: a fix you can make, or what the user must decide. Do not change code or commit before the user agrees.
 
 ## Rules
 

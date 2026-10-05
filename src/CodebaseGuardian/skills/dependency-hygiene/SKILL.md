@@ -9,10 +9,11 @@ metadata:
 
 # Dependency hygiene
 
-Use this when `repo.dependencies.changed` arrives or when asked about vulnerable or outdated packages.
+Use this when `repo.dependencies.changed` arrives, when `scan.completed` reports `vulnerablePackages` above zero, or when asked about vulnerable or outdated packages.
 
 ## Steps
 
+0. For `scan.completed`, read the Markdown report at its `reportUri`: the Dependencies section has a subsection per ecosystem. Confirm with step 2 before you change anything. To start a scan yourself call `full_scan`. It runs as an MCP task; if your client has no task support, call `scan_secrets`, `audit_dependencies` and `run_checks` instead.
 1. Read the event payload: `manifests` and `ecosystems` say what changed, `commitSha` says which commit, if any.
 2. Call `audit_dependencies`. Set `includeOutdated` to false for a quick vulnerability-only check. The tool queries the package feeds, so it needs network access and can be slow.
 3. Read the status of each ecosystem. `skipped` means its toolchain is not installed and `failed` carries a reason. Report these; do not treat them as clean.

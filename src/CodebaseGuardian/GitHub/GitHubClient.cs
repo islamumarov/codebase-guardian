@@ -127,10 +127,14 @@ public sealed partial class GitHubClient : IGitHubClient
 
     // ---- plumbing -----------------------------------------------------------------------------------------------
 
-    private sealed record Context(GitHubRepositoryRef Repository, string Token)
+    internal sealed record Context(GitHubRepositoryRef Repository, string Token)
     {
         public string Path(params string[] segments) =>
-            $"repos/{Repository.Owner}/{Repository.Name}" + string.Concat(segments.Select(segment => "/" + segment));
+            $"repos/{Uri.EscapeDataString(Repository.Owner)}/{Uri.EscapeDataString(Repository.Name)}"
+            + string.Concat(segments.Select(segment => "/" + segment));
+
+        // The compiler-generated ToString would print the token.
+        public override string ToString() => Repository.ToString();
     }
 
     private async Task<Context> PrepareAsync(CancellationToken ct)
