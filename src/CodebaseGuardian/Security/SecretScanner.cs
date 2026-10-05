@@ -54,10 +54,23 @@ public sealed class SecretScanner(IGitRepository git, ILogger<SecretScanner> log
     }
 
     public async Task<IReadOnlyList<SecretFinding>> ScanStagedAsync(CancellationToken ct) =>
-        ScanPatch((await git.GetStagedDiffAsync(MaxPatchBytes, ct)).Patch);
+        ScanDiff(await git.GetStagedDiffAsync(MaxPatchBytes, ct), "staged changes");
 
     public async Task<IReadOnlyList<SecretFinding>> ScanCommitAsync(string sha, CancellationToken ct) =>
-        ScanPatch((await git.GetCommitDiffAsync(GitRevision.Require(sha, nameof(sha)), MaxPatchBytes, ct)).Patch);
+        ScanDiff(await git.GetCommitDiffAsync(GitRevision.Require(sha, nameof(sha)), MaxPatchBytes, ct), $"commit {sha}");
+
+    // A capped patch means the scan saw only its beginning: say so rather than report a silent all-clear.
+    private IReadOnlyList<SecretFinding> ScanDiff(DiffSummary diff, string scope)
+    {
+        if (diff.PatchTruncated)
+        {
+            logger.LogWarning(
+                "Secret scan of {Scope} covered only the first {Bytes} bytes of the patch; later changes were not scanned.",
+                scope, MaxPatchBytes);
+        }
+
+        return ScanPatch(diff.Patch);
+    }
 
     public IReadOnlyList<SecretFinding> ScanText(string path, string content)
     {
@@ -185,7 +198,8 @@ public sealed class SecretScanner(IGitRepository git, ILogger<SecretScanner> log
         try
         {
             var info = new FileInfo(fullPath);
-            if (!info.Exists || info.Length > MaxFileBytes)
+            // A symlink's content is the target's, which may lie outside the repository (~/.aws/credentials): never follow it.
+            if (info.LinkTarget is not null || !info.Exists || info.Length > MaxFileBytes)
             {
                 return null;
             }
