@@ -1,46 +1,18 @@
 using CodebaseGuardian.Hosting;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 
+// Each host normalizes the raw arguments itself, exactly once (Normalize is not idempotent).
 var arguments = GuardianCommandLine.Normalize(args);
 
-var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
-{
-    Args = arguments,
+// Only the transport is needed to dispatch; each host builds its own full configuration. Same sources as the hosts:
+// appsettings.json next to the binary, environment variables, then the command line.
+var transport = new ConfigurationBuilder()
+    .AddJsonFile(Path.Combine(AppContext.BaseDirectory, "appsettings.json"), optional: true)
+    .AddEnvironmentVariables()
+    .AddCommandLine(arguments, new Dictionary<string, string>(GuardianCommandLine.SwitchMappings))
+    .Build()
+    .GetValue<GuardianTransport>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.Transport)}");
 
-    // appsettings.json is read from the tool's own directory, not the working directory: the working directory is usually
-    // the repository being watched, and a repository must not be able to configure the tool that watches it.
-    ContentRootPath = AppContext.BaseDirectory,
-});
-
-// Configuration sources, lowest to highest priority: appsettings.json (optional), environment variables
-// (GUARDIAN__RepositoryPath maps to Guardian:RepositoryPath), then the command line through its switch mappings.
-builder.Configuration.AddCommandLine(arguments, new Dictionary<string, string>(GuardianCommandLine.SwitchMappings));
-
-if (builder.Configuration.GetValue<GuardianTransport>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.Transport)}")
-    == GuardianTransport.Http)
-{
-    Console.Error.WriteLine("HTTP transport is not available yet (Task 14).");
-    return 2;
-}
-
-// stdout carries MCP protocol messages; all logs go to stderr.
-builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
-
-builder.Services
-    .AddCodebaseGuardian(builder.Configuration)
-    .WithStdioServerTransport();
-
-try
-{
-    await builder.Build().RunAsync();
-    return 0;
-}
-catch (OptionsValidationException exception)
-{
-    Console.Error.WriteLine($"codebase-guardian: invalid configuration.{Environment.NewLine}{exception.Message}");
-    return 2;
-}
+return transport == GuardianTransport.Http
+    ? await HttpHost.RunAsync(args)
+    : await StdioHost.RunAsync(args);

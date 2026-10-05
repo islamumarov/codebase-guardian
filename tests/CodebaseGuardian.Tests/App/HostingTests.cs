@@ -276,17 +276,14 @@ public class HostingTests
     }
 
     [Fact]
-    public void TempGitRepo_ignores_global_and_system_git_configuration()
+    public void TempGitRepo_sets_a_test_identity_and_unsigned_commits()
     {
-        // A developer's global excludes, autocrlf, hooks or signing settings must not change what the tests commit.
+        // That nothing else (global files, environment variables) reaches git is covered by TempGitRepoIsolationTests.
         using var repo = TempGitRepo.Create();
 
-        var entries = repo.Git("config", "--list", "--show-scope").Split('\n');
-
-        Assert.All(entries, entry => Assert.StartsWith("local\t", entry));
-        Assert.Contains("local\tcommit.gpgsign=false", entries);
-        Assert.Contains(entries, entry => entry.StartsWith("local\tuser.name=", StringComparison.Ordinal));
-        Assert.Contains(entries, entry => entry.StartsWith("local\tuser.email=", StringComparison.Ordinal));
+        Assert.Equal(TempGitRepo.AuthorName, repo.Git("config", "--local", "--get", "user.name"));
+        Assert.Equal(TempGitRepo.AuthorEmail, repo.Git("config", "--local", "--get", "user.email"));
+        Assert.Equal("false", repo.Git("config", "--local", "--get", "commit.gpgsign"));
     }
 
     [Fact]

@@ -23,6 +23,14 @@ public sealed class GuardianOptions
 
     public string HttpUrl { get; set; } = "http://127.0.0.1:5199";
 
+    /// <summary>
+    /// Allows <see cref="HttpUrl"/> to bind a non-loopback address. The HTTP transport has no authentication yet, so
+    /// anyone who can reach the port can read the repository and run its checks. Remote mode drops only the <c>Host</c>
+    /// restriction (DNS-rebinding protection for a local server); a request whose <c>Origin</c> is present and not
+    /// loopback is still refused.
+    /// </summary>
+    public bool HttpAllowRemote { get; set; }
+
     public bool AutoChecks { get; set; }
 
     public bool WatchEnabled { get; set; } = true;

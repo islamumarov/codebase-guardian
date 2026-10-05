@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>GuardianWatch</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- A client: it needs the core SDK only, never the server libraries. -->
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+
+</Project>

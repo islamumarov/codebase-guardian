@@ -21,6 +21,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Bundled skills: next to the binary on build and publish, and in the published output that PackAsTool packs into the tool package. -->
+    <Content Include="skills/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodebaseGuardian.Tests" />
     <ProjectReference Include="../Mcp.Skills/Mcp.Skills.csproj" />
     <ProjectReference Include="../Mcp.Events/Mcp.Events.csproj" />
   </ItemGroup>

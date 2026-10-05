@@ -16,6 +16,7 @@
     <ProjectReference Include="../../src/CodebaseGuardian/CodebaseGuardian.csproj" />
     <ProjectReference Include="../../src/Mcp.Skills/Mcp.Skills.csproj" />
     <ProjectReference Include="../../src/Mcp.Events/Mcp.Events.csproj" />
+    <ProjectReference Include="../../samples/GuardianWatch/GuardianWatch.csproj" />
   </ItemGroup>
 
   <ItemGroup>
