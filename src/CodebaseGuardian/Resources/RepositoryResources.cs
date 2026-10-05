@@ -1,6 +1,5 @@
 using System.ComponentModel;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Tools;
 using ModelContextProtocol.Server;
@@ -12,11 +11,8 @@ public sealed class RepositoryResources(IGitRepository git)
 {
     private const int RecentCommitCount = 20;
 
-    // Same shape the tools produce: camelCase, null properties omitted (as the SDK does for structured content).
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
+    // Same shape the tools produce: camelCase, null properties emitted.
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     [McpServerResource(UriTemplate = "guardian://repo/status", Name = "repo-status", MimeType = "application/json")]
     [Description("Current repository status: branch, HEAD, upstream, staged, unstaged, untracked and conflicted files. Same content as the repo_status tool.")]
