@@ -2,6 +2,8 @@ using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using CodebaseGuardian.Git;
+using CodebaseGuardian.Processes;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -30,6 +32,9 @@ public static class GuardianServiceCollectionExtensions
             .Bind(configuration.GetSection(GuardianOptions.SectionName))
             .PostConfigure(options => options.RepositoryPath = ToFullPath(options.RepositoryPath))
             .ValidateOnStart();
+
+        services.AddSingleton<IProcessRunner, ProcessRunner>();
+        services.AddSingleton<IGitRepository, GitRepository>();
 
         // Instructions are composed when McpServerOptions are first built, so contributors that are
         // registered after this call (by tests, or by features added later) are included.
