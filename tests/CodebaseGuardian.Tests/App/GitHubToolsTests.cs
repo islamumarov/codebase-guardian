@@ -1,6 +1,6 @@
 using System.Text.Json;
+using CodebaseGuardian.Security;
 using CodebaseGuardian.Tests.Infrastructure;
-using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -100,7 +100,8 @@ public class GitHubToolsTests
 
         Assert.NotEqual(true, result.IsError);
         Assert.Equal("declined", result.StructuredContent!.Value.GetProperty("status").GetString());
-        Assert.Contains("The user declined; nothing was sent to GitHub.", TextOf(result));
+        Assert.Equal("The user declined; nothing was sent to GitHub.", TextOf(result));
+        Assert.Equal("""{"status":"declined"}""", result.StructuredContent!.Value.GetRawText());
         Assert.Equal(0, Posts(api));
     }
 
@@ -117,6 +118,37 @@ public class GitHubToolsTests
         Assert.Single(seen);
         Assert.Equal("declined", result.StructuredContent!.Value.GetProperty("status").GetString());
         Assert.Equal(0, Posts(api));
+    }
+
+    [Fact]
+    public async Task Confirm_argument_with_an_accepting_prompt_prompts_once_and_posts_once()
+    {
+        using var repo = Repo();
+        var api = Api();
+        var seen = new List<string>();
+        await using var server = await StartAsync(repo, api, Elicit("accept", seen));
+
+        var result = await server.Client.CallToolAsync("create_issue", Issue(confirm: true), cancellationToken: Ct);
+
+        Assert.NotEqual(true, result.IsError);
+        Assert.Single(seen);
+        Assert.Equal(1, Posts(api));
+    }
+
+    [Fact]
+    public async Task Summaries_are_a_single_line()
+    {
+        using var repo = Repo();
+        var seen = new List<string>();
+        await using var server = await StartAsync(repo, Api(), Elicit("accept", seen));
+
+        await server.Client.CallToolAsync("comment_on_pr",
+            new Dictionary<string, object?> { ["number"] = 12, ["body"] = "line one\r\n\r\nline  two\n" + new string('x', 200) }, cancellationToken: Ct);
+
+        var summary = Assert.Single(seen);
+        Assert.DoesNotContain('\n', summary);
+        Assert.DoesNotContain('\r', summary);
+        Assert.StartsWith("Comment on acme/widgets#12: \"line one line two xxx", summary);
     }
 
     [Fact]
@@ -148,7 +180,7 @@ public class GitHubToolsTests
 
         Assert.True(result.IsError);
         var text = TextOf(result);
-        Assert.Contains("body contains what looks like a secret", text);
+        Assert.Contains($"body contains what looks like a secret (github-token {Redactor.Redact(FakeSecrets.GitHubToken())} on line 1)", text);
         Assert.DoesNotContain(FakeSecrets.GitHubToken(), text);
         Assert.Empty(seen);
         Assert.Equal(0, Posts(api));
@@ -158,7 +190,9 @@ public class GitHubToolsTests
     public async Task Invalid_arguments_are_tool_errors()
     {
         using var repo = Repo();
-        await using var server = await StartAsync(repo, Api(), Elicit("accept", []));
+        var api = Api();
+        var seen = new List<string>();
+        await using var server = await StartAsync(repo, api, Elicit("accept", seen));
 
         var empty = await server.Client.CallToolAsync("create_issue",
             new Dictionary<string, object?> { ["title"] = "", ["body"] = "b" }, cancellationToken: Ct);
@@ -166,7 +200,11 @@ public class GitHubToolsTests
             new Dictionary<string, object?> { ["title"] = "t", ["body"] = "b", ["labels"] = Enumerable.Range(0, 11).Select(i => $"l{i}").ToArray() }, cancellationToken: Ct);
 
         Assert.True(empty.IsError);
+        Assert.Contains("The title must be 1 to 256 characters.", TextOf(empty));
         Assert.True(labels.IsError);
+        Assert.Contains("At most 10 labels are allowed.", TextOf(labels));
+        Assert.Empty(seen);
+        Assert.Equal(0, Posts(api));
     }
 
     [Fact]

@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.GitHub;
 using CodebaseGuardian.Security;
@@ -8,14 +10,12 @@ using ModelContextProtocol.Server;
 
 namespace CodebaseGuardian.Tools;
 
-public sealed record GitHubActionResult(string Status, int? Number, long? CommentId, string? Url, string? Message = null);
-
 /// <summary>
 /// Outward-facing GitHub actions. They never run without the user's confirmation, and they must stay synchronous:
 /// SDK 2.2.0 cannot combine MRTR with the Tasks extension.
 /// </summary>
 [McpServerToolType]
-public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IActionConfirmation confirmation)
+public sealed partial class GitHubTools(IGitHubClient github, ISecretScanner scanner, IActionConfirmation confirmation)
 {
     private const int MaxTitle = 256;
     private const int MaxBody = 65_536;
@@ -27,7 +27,7 @@ public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IA
 
     [McpServerTool(Name = "create_issue", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Creates an issue in the GitHub repository. Writes to GitHub. The user is asked to confirm; if your client cannot show prompts, ask the user yourself and pass confirm: true.")]
-    public Task<GitHubActionResult> CreateIssue(
+    public Task<CallToolResult> CreateIssue(
         McpServer server,
         RequestContext<CallToolRequestParams> context,
         [Description("Issue title, 1 to 256 characters.")] string title,
@@ -35,7 +35,7 @@ public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IA
         [Description("Labels to apply, at most 10.")] string[]? labels = null,
         [Description("Pass true only after the user approved this action, when your client cannot show prompts.")] bool confirm = false,
         CancellationToken cancellationToken = default) =>
-        RunAsync(async () =>
+        RunGitHubAsync(async () =>
         {
             RequireLength(title, 1, MaxTitle, nameof(title));
             RequireLength(body, 0, MaxBody, nameof(body));
@@ -53,26 +53,26 @@ public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IA
             OutboundTextGuard.EnsureNoSecrets(scanner, "title", title);
             OutboundTextGuard.EnsureNoSecrets(scanner, "body", body);
             var repo = await github.GetRepositoryAsync(cancellationToken);
-            var summary = $"Create issue in {repo.Owner}/{repo.Name}: \"{title}\"" + (labelList.Length > 0 ? $" [labels: {string.Join(", ", labelList)}]" : "");
-            if (Check(server, context, summary, confirm) is { } stop)
+            var summary = $"Create issue in {repo.Owner}/{repo.Name}: \"{OneLine(title)}\"" + (labelList.Length > 0 ? $" [labels: {string.Join(", ", labelList)}]" : "");
+            if (Decision(server, context, summary, confirm) is { } stop)
             {
                 return stop;
             }
 
             var issue = await github.CreateIssueAsync(title, body, labelList, cancellationToken);
-            return new GitHubActionResult("created", issue.Number, null, issue.HtmlUrl);
+            return Created(("number", issue.Number), ("url", issue.HtmlUrl));
         });
 
     [McpServerTool(Name = "comment_on_pr", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Adds a comment to a pull request (or issue) in the GitHub repository. Writes to GitHub. The user is asked to confirm; if your client cannot show prompts, ask the user yourself and pass confirm: true.")]
-    public Task<GitHubActionResult> CommentOnPr(
+    public Task<CallToolResult> CommentOnPr(
         McpServer server,
         RequestContext<CallToolRequestParams> context,
         [Description("Pull request number, 1 or greater.")] int number,
         [Description("Comment body (Markdown), 1 to 65536 characters.")] string body,
         [Description("Pass true only after the user approved this action, when your client cannot show prompts.")] bool confirm = false,
         CancellationToken cancellationToken = default) =>
-        RunAsync(async () =>
+        RunGitHubAsync(async () =>
         {
             if (number < 1)
             {
@@ -82,20 +82,20 @@ public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IA
             RequireLength(body, 1, MaxBody, nameof(body));
             OutboundTextGuard.EnsureNoSecrets(scanner, "body", body);
             var repo = await github.GetRepositoryAsync(cancellationToken);
-            var excerpt = body.Length > 120 ? body[..120] : body;
+            var excerpt = Excerpt(OneLine(body), 120);
             var summary = $"Comment on {repo.Owner}/{repo.Name}#{number}: \"{excerpt}\"";
-            if (Check(server, context, summary, confirm) is { } stop)
+            if (Decision(server, context, summary, confirm) is { } stop)
             {
                 return stop;
             }
 
             var comment = await github.CreateIssueCommentAsync(number, body, cancellationToken);
-            return new GitHubActionResult("created", null, comment.Id, comment.HtmlUrl);
+            return Created(("commentId", comment.Id), ("url", comment.HtmlUrl));
         });
 
     [McpServerTool(Name = "open_pull_request", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true)]
     [Description("Opens a pull request from a branch that is already pushed to GitHub. Writes to GitHub. The user is asked to confirm; if your client cannot show prompts, ask the user yourself and pass confirm: true.")]
-    public Task<GitHubActionResult> OpenPullRequest(
+    public Task<CallToolResult> OpenPullRequest(
         McpServer server,
         RequestContext<CallToolRequestParams> context,
         [Description("The branch to merge (must already be pushed).")] string head,
@@ -105,7 +105,7 @@ public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IA
         [Description("Open as a draft pull request.")] bool draft = false,
         [Description("Pass true only after the user approved this action, when your client cannot show prompts.")] bool confirm = false,
         CancellationToken cancellationToken = default) =>
-        RunAsync(async () =>
+        RunGitHubAsync(async () =>
         {
             var source = GitRevision.Require(head ?? string.Empty, nameof(head));
             if (@base is not null)
@@ -135,32 +135,60 @@ public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IA
             }
 
             var summary = $"Open pull request in {repo.Owner}/{repo.Name}: {head} → {target} \"{title}\"";
-            if (Check(server, context, summary, confirm) is { } stop)
+            if (Decision(server, context, summary, confirm) is { } stop)
             {
                 return stop;
             }
 
             var pr = await github.CreatePullRequestAsync(source, target, title, body, draft, cancellationToken);
-            return new GitHubActionResult("created", pr.Number, null, pr.HtmlUrl);
+            return Created(("number", pr.Number), ("url", pr.HtmlUrl));
         });
 
-    private GitHubActionResult? Check(McpServer server, RequestContext<CallToolRequestParams> context, string summary, bool confirm) =>
+    /// <summary>Null when confirmed; otherwise the result to return (declined) or a tool error.</summary>
+    private CallToolResult? Decision(McpServer server, RequestContext<CallToolRequestParams> context, string summary, bool confirm) =>
         confirmation.Confirm(server, context, summary, confirm) switch
         {
             ConfirmationStatus.Confirmed => null,
-            ConfirmationStatus.Declined => throw new DeclinedException(),
+            ConfirmationStatus.Declined => new CallToolResult
+            {
+                Content = [new TextContentBlock { Text = Declined }],
+                StructuredContent = JsonSerializer.SerializeToElement(new Dictionary<string, object> { ["status"] = "declined" }),
+            },
             _ => throw new McpException(ConfirmRequired),
         };
 
-    private static async Task<GitHubActionResult> RunAsync(Func<Task<GitHubActionResult>> action)
+    private static CallToolResult Created(params (string Name, object Value)[] fields)
+    {
+        var content = new Dictionary<string, object> { ["status"] = "created" };
+        foreach (var (name, value) in fields)
+        {
+            content[name] = value;
+        }
+
+        var json = JsonSerializer.SerializeToElement(content);
+        return new CallToolResult { Content = [new TextContentBlock { Text = json.GetRawText() }], StructuredContent = json };
+    }
+
+    private static string OneLine(string text) => Whitespace().Replace(text, " ").Trim();
+
+    private static string Excerpt(string text, int max)
+    {
+        if (text.Length <= max)
+        {
+            return text;
+        }
+
+        return char.IsHighSurrogate(text[max - 1]) ? text[..(max - 1)] : text[..max];
+    }
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex Whitespace();
+
+    private static async Task<CallToolResult> RunGitHubAsync(Func<Task<CallToolResult>> action)
     {
         try
         {
             return await ToolErrors.RunAsync(action);
-        }
-        catch (DeclinedException)
-        {
-            return new GitHubActionResult("declined", null, null, null, Declined);
         }
         catch (Exception ex) when (ex is GitHubUnavailableException or GitHubApiException)
         {
@@ -176,5 +204,4 @@ public sealed class GitHubTools(IGitHubClient github, ISecretScanner scanner, IA
         }
     }
 
-    private sealed class DeclinedException : Exception;
 }
