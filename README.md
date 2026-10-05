@@ -9,7 +9,7 @@ keep dependencies healthy without constant polling or a human prompting each ste
 Every event that has a natural follow-up names a **suggested skill**. A skill is a packaged workflow that the agent loads
 (`skills/get` + `resources/read`, verified against a SHA-256 digest) and then carries out with the Guardian's tools.
 
-It is built on the Model Context Protocol `2026-07-28` revision, the MCP C# SDK 2.2.0 and .NET 10:
+It is built on the Model Context Protocol revision, the MCP C# SDK 2.2.0 and .NET 10:
 
 - **MCP Events**: `events/list`, `events/poll`, and `events/stream` push delivery
 - **Skills extension** (`io.modelcontextprotocol/skills`, SEP-2640)
@@ -33,7 +33,7 @@ Traditional AI coding assistants are **reactive**: they act only when a human as
 | An event alone does not say what to do next | Each event carries a `suggestedSkill` URI, so the agent knows which workflow to load |
 | Skill content could be tampered with in transit | Every skill file is listed with its size and SHA-256 digest, so clients can verify what they load |
 | Long-running analysis blocks the conversation | The **Tasks** extension: `full_scan` (and, optionally, `run_checks` and `audit_dependencies`) return a task handle instead of blocking |
-| Scaling MCP servers used to require sticky sessions | Built on the **stateless `2026-07-28`** protocol: request/response methods need no session affinity |
+| Scaling MCP servers used to require sticky sessions | Built on the **stateless ** protocol: request/response methods need no session affinity |
 | Every team reinvents the same "watch this repo" logic | One reusable MCP server that any MCP client can connect to |
 
 **What it does today:**
@@ -63,7 +63,7 @@ This is the difference between an AI that answers questions and an AI that **hel
 | Skills (`io.modelcontextprotocol/skills`) | `skills/list`, `skills/get`, `resources/directory/read`; five bundled skills |
 | Tasks (`io.modelcontextprotocol/tasks`) | `full_scan` always runs as a task; `run_checks` and `audit_dependencies` may |
 | Events (Triggers & Events, **draft**) | `events/list`, `events/poll`, `events/stream`, `events/subscribe` (webhooks, authenticated HTTP only) |
-| Stateless 2026-07-28 core | stdio and stateless Streamable HTTP |
+| Stateless core | stdio and stateless Streamable HTTP |
 
 ### Bundled skills
 
@@ -79,7 +79,7 @@ New skills are a directory with a `SKILL.md`; point `--skills-dir` at your own d
 
 ### Modern MCP support
 
-- Protocol version `2026-07-28`, verified with the official MCP conformance suite: all three Skills scenarios pass (see
+- Latest Protocol version, verified with the official MCP conformance suite: all three Skills scenarios pass (see
   [docs/reference/conformance.md](docs/reference/conformance.md)).
 - stdio and stateless Streamable HTTP transports.
 - Works with any MCP client, for example Claude Code or VS Code. Clients that do not implement the draft `events/*` methods
@@ -291,7 +291,7 @@ Spec [section 7](docs/specs/2026-10-04-codebase-guardian-design.md).
 - Dependency auditing covers NuGet and npm only.
 - GitHub support covers github.com repositories and polls for events; there is no inbound GitHub webhook.
 - The `create_issue`, `comment_on_pr` and `open_pull_request` tools cannot run as tasks (SDK 2.2.0 cannot combine them with elicitation).
-- Conformance: the three Skills scenarios of the MCP conformance suite pass; the base 2026-07-28 suite passes everything that does
+- Conformance: the three Skills scenarios of the MCP conformance suite pass; the base suite passes everything that does
   not need the suite's own fixtures. Details: [docs/reference/conformance.md](docs/reference/conformance.md).
 
 ## Roadmap
