@@ -88,6 +88,29 @@ public class ScanToolsTests
     }
 
     [Fact]
+    public async Task Without_checks_the_structured_result_carries_an_explicit_null_and_the_output_schema_allows_it()
+    {
+        using var repo = SolutionRepo();
+        await using var server = await GuardianTestHost.StartAsync(
+            repo.Path, null, s => s.AddSingleton<IProcessRunner>(PassingChecks()), TasksClient(), Ct);
+
+        var created = await server.Client.CallToolAsTaskAsync(
+            new CallToolRequestParams { Name = "full_scan", Arguments = new Dictionary<string, JsonElement> { ["includeChecks"] = JsonSerializer.SerializeToElement(false) } }, Ct);
+        var done = await WaitForCompletedAsync(server.Client, created.TaskCreated!.TaskId);
+        var structured = done.Result.GetProperty("structuredContent");
+
+        Assert.Equal(JsonValueKind.Null, structured.GetProperty("checksPassed").ValueKind);
+
+        var tool = Assert.Single(await server.Client.ListToolsAsync(cancellationToken: Ct), t => t.Name == "full_scan");
+        var schema = tool.ProtocolTool.OutputSchema!.Value;
+        var checksType = schema.GetProperty("properties").GetProperty("checksPassed").GetProperty("type");
+        Assert.Contains("null", checksType.EnumerateArray().Select(t => t.GetString()));
+        Assert.Equal(
+            structured.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal),
+            schema.GetProperty("required").EnumerateArray().Select(r => r.GetString()!).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
     public async Task A_client_without_the_tasks_extension_gets_missing_required_client_capability()
     {
         using var repo = SolutionRepo();

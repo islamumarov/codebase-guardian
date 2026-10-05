@@ -58,7 +58,7 @@ public sealed class FullScanService(
 
         cancellationToken.ThrowIfCancellationRequested();
         var draft = new ScanReport(
-            NewScanId(startedAt), startedAt, time.GetElapsedTime(clock), headSha, findings, audit, run, skipped, errors, "");
+            NewScanId(startedAt), startedAt, time.GetElapsedTime(clock), headSha, findings, Redact(audit), Redact(run), skipped, errors, "");
         var report = draft with { Markdown = ScanReportRenderer.Render(draft, git.RootPath) };
 
         store.Add(report);
@@ -77,6 +77,17 @@ public sealed class FullScanService(
             }
         }
     }
+
+    // Free text from tools and process output can contain a secret; the renderer stays pure, so redact here.
+    private CheckRun? Redact(CheckRun? run) => run is null ? null : run with
+    {
+        Summary = secrets.RedactSecrets(run.Summary),
+        FailedTests = [.. run.FailedTests.Select(secrets.RedactSecrets)],
+        Command = secrets.RedactSecrets(run.Command),
+    };
+
+    private DependencyAuditReport? Redact(DependencyAuditReport? report) => report is null ? null : new DependencyAuditReport(
+        [.. report.Ecosystems.Select(e => e with { Reason = e.Reason is null ? null : secrets.RedactSecrets(e.Reason) })]);
 
     private static JsonObject Payload(ScanReport report)
     {

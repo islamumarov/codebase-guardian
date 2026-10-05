@@ -44,7 +44,6 @@ Traditional AI coding assistants are **reactive**: they act only when a human as
 - When a dependency manifest changes, the `dependency-hygiene` skill audits for vulnerable and outdated packages.
 - When the build or tests fail (`checks.failed`), the `bug-triage` skill reads the stored log, reproduces the failure and
   isolates the commit that caused it.
-
 - When a `full_scan` finishes (`scan.completed`), the event links the Markdown report and names the skill to load next.
 - With a GitHub token, new issues, PR comments and failed CI runs arrive as events, and the agent can file an issue, comment on
   a PR or open a pull request from an already pushed branch. Every outward-facing action asks for confirmation first.

@@ -89,6 +89,21 @@ public class FullScanServiceTests
     }
 
     [Fact]
+    public async Task Free_text_from_the_check_run_is_redacted_before_it_is_stored()
+    {
+        using var repo = RepoWith(null);
+        var token = FakeSecrets.GitHubToken();
+        var run = Run(false) with { Summary = $"auth failed with {token}", FailedTests = [$"Tests.Leak {token}"] };
+        await using var server = await StartAsync(repo, new FakeAuditor(Clean()), new FakeRunner(run), Command);
+
+        var (report, _) = await ScanAsync(server);
+
+        Assert.DoesNotContain(token, report.Markdown);
+        Assert.DoesNotContain(token, report.Checks!.Summary);
+        Assert.Contains("auth failed with", report.Markdown);
+    }
+
+    [Fact]
     public async Task Without_secrets_a_vulnerable_package_suggests_dependency_hygiene()
     {
         using var repo = RepoWith(null);

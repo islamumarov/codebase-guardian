@@ -104,4 +104,15 @@ public class ScanReportRendererTests
 
         Assert.Contains("| r | a\\|b c.txt | 1 | x |", markdown);
     }
+
+    [Fact]
+    public void Backslashes_and_backticks_are_escaped_in_cells_and_the_command_cannot_close_its_code_span()
+    {
+        var run = new CheckRun("run_1", "dotnet `test`", 0, true, false, Started, TimeSpan.Zero, "ok", [], "", "scan", null);
+
+        var markdown = ScanReportRenderer.Render(Report([new SecretFinding("r", "a\\|b`c", 1, "x")], checks: run), "/r");
+
+        Assert.Contains("| r | a\\\\\\|b\\`c | 1 | x |", markdown);
+        Assert.Contains("- Command: `dotnet 'test'`", markdown);
+    }
 }

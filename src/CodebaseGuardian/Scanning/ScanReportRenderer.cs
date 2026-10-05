@@ -104,7 +104,7 @@ public static class ScanReportRenderer
             return;
         }
 
-        text.Append("- Command: `").Append(run.Command).Append("`\n");
+        text.Append("- Command: `").Append(Inline(run.Command).Replace("`", "'", StringComparison.Ordinal)).Append("`\n");
         text.Append("- Result: ").Append(run.TimedOut ? "timed out" : run.Passed ? "passed" : $"failed (exit code {run.ExitCode.ToString(CultureInfo.InvariantCulture)})").Append('\n');
         text.Append("- Summary: ").Append(Inline(run.Summary)).Append('\n');
         if (run.FailedTests.Count > 0)
@@ -124,8 +124,11 @@ public static class ScanReportRenderer
         text.Append("- Log: ").Append(run.LogUri).Append('\n');
     }
 
-    /// <summary>One table cell: no line breaks, and <c>|</c> escaped so it cannot start another column.</summary>
-    private static string Cell(string? value) => Inline(value ?? "").Replace("|", "\\|", StringComparison.Ordinal);
+    /// <summary>One table cell: no line breaks; backslash, <c>|</c> and a backtick are escaped so it cannot start another column or code span.</summary>
+    private static string Cell(string? value) => Inline(value ?? "")
+        .Replace("\\", "\\\\", StringComparison.Ordinal)
+        .Replace("|", "\\|", StringComparison.Ordinal)
+        .Replace("`", "\\`", StringComparison.Ordinal);
 
     private static string Inline(string value) => value.Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal);
 }
