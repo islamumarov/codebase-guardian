@@ -24,3 +24,5 @@ Preflight rulings (2026-10-05) are already applied to the BACKLOG.md text. They 
 
 ## Progress
 Task 1: implemented (commits d37a914..5631323), review pending
+Ruling (toolchain, user-directed 2026-10-05): `global.json` pins SDK `10.0.100` (roll-forward `latestFeature`) instead of `11.0.100-rc.1.26425.128`; cloud runs install `dotnet-sdk-10.0` from apt — cloud egress blocks `builds.dotnet.microsoft.com`, and the user said to use .NET 10; projects already target `net10.0` and the suite builds and runs on SDK 10.0.112 — if wrong: re-pin 11 rc in `global.json` where that SDK can be installed.
+Ruling (baseline): on SDK 10.0.112 the baseline is 38/39; `TempGitRepo_ignores_global_and_system_git_configuration` fails because `TempGitRepo` does not neutralise env-scoped git config (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, `GIT_CONFIG_PARAMETERS`) that the cloud proxy injects. This is Task 1 code under review, so it goes to Task 1's fix loop instead of a `Baseline red` stop — if wrong: none; the test exists to catch exactly this.
