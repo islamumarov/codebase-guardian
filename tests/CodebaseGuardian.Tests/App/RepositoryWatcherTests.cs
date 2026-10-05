@@ -90,13 +90,15 @@ public class RepositoryWatcherTests
         await using var host = await StartAsync(repo);
         var cursor = await EventsPolling.GetCursorAsync(host, Ct);
 
+        var mainSha = repo.Git("rev-parse", "HEAD");
         repo.Git("checkout", "-b", "feature");
         repo.WriteFile("f.txt", "f");
         var sha = repo.Commit("feature work");
 
+        // A poll may land between the checkout and the commit, so the head is either the old or the new one.
         var switched = await WaitAsync(host, "repo.branch.changed", cursor, d => (string?)d["to"] == "feature");
         Assert.Equal("main", (string?)switched["data"]!["from"]);
-        Assert.Equal(sha, (string?)switched["data"]!["headSha"]);
+        Assert.Contains((string?)switched["data"]!["headSha"], new[] { mainSha, sha });
         var commit = await WaitAsync(host, "repo.commit.created", cursor, Sha(sha));
         Assert.Equal("feature", (string?)commit["data"]!["branch"]);
 
@@ -272,6 +274,103 @@ public class RepositoryWatcherTests
         repo.WriteFile("a.txt", "a");
         repo.Commit("ignored");
         Assert.Empty(await EventsPolling.CollectAsync(host, "repo.commit.created", cursor, Settle, Ct));
+    }
+
+    [Fact]
+    public async Task A_rejected_exclusion_tip_is_retried_with_only_the_current_heads_of_other_branches()
+    {
+        var root = Directory.CreateTempSubdirectory("guardian-fake-").FullName;
+        try
+        {
+            var git = new FakeGit(root)
+            {
+                Heads = new Dictionary<string, string> { ["main"] = "a1", ["other"] = "o1", ["gone"] = "x1" },
+            };
+            var publisher = new RecordingPublisher();
+            var options = Microsoft.Extensions.Options.Options.Create(new CodebaseGuardian.Hosting.GuardianOptions
+            {
+                RepositoryPath = root, WatchEnabled = true, WatchIntervalMs = 100, FileChangeDebounceMs = 100,
+            });
+            using var watcher = new RepositoryWatcher(git, publisher, [], options, Microsoft.Extensions.Logging.Abstractions.NullLogger<RepositoryWatcher>.Instance);
+            await watcher.StartAsync(Ct);
+            try
+            {
+                git.Heads = new Dictionary<string, string> { ["main"] = "a2", ["other"] = "o1" }; // 'gone' deleted, its tip pruned
+                var deadline = DateTime.UtcNow + Timeout;
+                while (publisher.CommitShas.Count == 0 && DateTime.UtcNow < deadline)
+                {
+                    await Task.Delay(25, Ct);
+                }
+
+                await Task.Delay(500, Ct); // further polls must not announce anything again
+            }
+            finally
+            {
+                await watcher.StopAsync(CancellationToken.None);
+            }
+
+            Assert.Equal(["a2"], publisher.CommitShas.ToList());
+            Assert.Equal(2, git.Calls.Count);
+            Assert.Equal(["a1", "o1", "x1"], git.Calls[0].Order().ToList()); // first attempt excludes every previous tip
+            Assert.Equal(["o1"], git.Calls[1]);                             // retry: only the other branches' current heads
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class RecordingPublisher : Mcp.Events.IEventPublisher
+    {
+        private readonly ConcurrentQueue<string> _commitShas = new();
+        public IReadOnlyCollection<string> CommitShas => _commitShas;
+
+        public ValueTask<Mcp.Events.EventEnvelope> PublishAsync(string name, JsonObject data, string? eventId = null,
+            DateTimeOffset? timestamp = null, CancellationToken cancellationToken = default)
+        {
+            if (name == "repo.commit.created")
+            {
+                _commitShas.Enqueue((string)data["sha"]!);
+            }
+
+            return ValueTask.FromResult(new Mcp.Events.EventEnvelope(eventId ?? "id", name, DateTimeOffset.UtcNow, data, 1));
+        }
+    }
+
+    private sealed class FakeGit(string root) : IGitRepository
+    {
+        public volatile IReadOnlyDictionary<string, string> Heads = new Dictionary<string, string>();
+        public List<string[]> Calls { get; } = [];
+
+        public string RootPath => root;
+        public Task<string?> GetCurrentBranchAsync(CancellationToken ct = default) => Task.FromResult<string?>("main");
+        public Task<IReadOnlyDictionary<string, string>> GetBranchHeadsAsync(CancellationToken ct = default) => Task.FromResult(Heads);
+
+        public Task<IReadOnlyList<CommitInfo>> GetNewCommitsAsync(string tip, IReadOnlyCollection<string> excludeTips, int limit, CancellationToken ct = default)
+        {
+            lock (Calls)
+            {
+                Calls.Add([.. excludeTips]);
+            }
+
+            if (excludeTips.Contains("x1"))
+            {
+                throw new GitException("bad object", 128, "fatal: bad object x1");
+            }
+
+            return Task.FromResult<IReadOnlyList<CommitInfo>>([new CommitInfo(tip, tip, "n", "e", DateTimeOffset.UtcNow, "s", [])]);
+        }
+
+        public Task<DiffSummary> GetCommitDiffAsync(string sha, int maxPatchBytes, CancellationToken ct = default) =>
+            Task.FromResult(new DiffSummary("", sha, [], 0, 0, "", false));
+
+        public Task<RepoStatus> GetStatusAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<string?> GetHeadShaAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<CommitInfo>> GetRecentCommitsAsync(int limit, string? revision = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DiffSummary> GetDiffSummaryAsync(string? from, string? to, int maxPatchBytes, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DiffSummary> GetStagedDiffAsync(int maxPatchBytes, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<string>> ListFilesAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<string?> GetRemoteUrlAsync(string remote = "origin", CancellationToken ct = default) => throw new NotSupportedException();
     }
 
     private sealed class RecordingHandler : IRepositoryChangeHandler

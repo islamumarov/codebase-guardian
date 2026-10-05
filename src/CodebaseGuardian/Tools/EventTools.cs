@@ -24,7 +24,7 @@ public sealed class EventTools(IEventLog log, IOptions<EventsOptions> options)
     public Task<PollEventsResult> PollEvents(
         [Description("Cursor returned by the previous call. Omit it on the first call.")] string? cursor = null,
         [Description("Only return these event names, for example ['repo.commit.created']. Omit for all events.")] string[]? names = null,
-        [Description("Maximum number of events, 1 to 1000 (default 50).")] int maxEvents = 50) =>
+        [Description("Maximum number of events (default 50; capped by the server).")] int maxEvents = 50) =>
         ToolErrors.RunAsync(() =>
         {
             var eventOptions = options.Value;

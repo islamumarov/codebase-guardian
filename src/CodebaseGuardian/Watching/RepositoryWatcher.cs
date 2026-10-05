@@ -178,12 +178,14 @@ public sealed class RepositoryWatcher : BackgroundService
                 var commits = await GetNewCommitsAsync(branch, head, previous, heads, cancellationToken);
                 foreach (var commit in commits)
                 {
-                    if (!Remember(commit.Sha))
+                    if (_announced.Contains(commit.Sha))
                     {
                         continue;
                     }
 
+                    // Remembered only once published: a failed publish keeps the branch's old head, so it is retried.
                     await AnnounceCommitAsync(commit, branch, cancellationToken);
+                    Remember(commit.Sha);
                     announced.Add(commit);
                 }
             }
@@ -240,7 +242,7 @@ public sealed class RepositoryWatcher : BackgroundService
         }
 
         var paths = diff?.Files.Select(f => f.Path).ToList() ?? [];
-        await PublishSafelyAsync(GuardianEventNames.RepoCommitCreated, new JsonObject
+        await _publisher.PublishAsync(GuardianEventNames.RepoCommitCreated, new JsonObject
         {
             ["sha"] = commit.Sha,
             ["shortSha"] = commit.ShortSha,
@@ -253,7 +255,7 @@ public sealed class RepositoryWatcher : BackgroundService
             ["deletions"] = diff?.Deletions ?? 0,
             ["files"] = new JsonArray([.. paths.Take(MaxFilesInCommitEvent).Select(p => (JsonNode?)p)]),
             ["suggestedSkill"] = SuggestedSkills.PrReview,
-        }, cancellationToken, eventId: $"commit-{commit.Sha}");
+        }, $"commit-{commit.Sha}", cancellationToken: cancellationToken);
 
         await PublishDependencyChangeAsync(paths, commit.Sha, cancellationToken);
     }

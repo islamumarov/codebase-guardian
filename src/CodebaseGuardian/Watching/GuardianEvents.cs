@@ -23,7 +23,8 @@ public static class GuardianEvents
                   "filesChanged":{"type":"integer"},"insertions":{"type":"integer"},"deletions":{"type":"integer"},
                   "files":{"type":"array","items":{"type":"string"}},"suggestedSkill":{"type":"string"}}}
                 """),
-            Matches = (arguments, data) => Argument(arguments, "branch") is not { } branch || (string?)data["branch"] == branch,
+            Matches = (arguments, data) => !HasArgument(arguments, "branch")
+                || Argument(arguments, "branch") is { } branch && AsString(data["branch"]) == branch,
         });
 
         options.Define(new EventDefinition
@@ -44,8 +45,9 @@ public static class GuardianEvents
             PayloadSchema = Obj("""
                 {"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"count":{"type":"integer"}}}
                 """),
-            Matches = (arguments, data) => Argument(arguments, "pathPrefix") is not { } prefix
-                || data["paths"] is JsonArray paths && paths.Any(p => ((string?)p)?.StartsWith(prefix, StringComparison.Ordinal) == true),
+            Matches = (arguments, data) => !HasArgument(arguments, "pathPrefix")
+                || Argument(arguments, "pathPrefix") is { } prefix
+                && data["paths"] is JsonArray paths && paths.Any(p => AsString(p)?.StartsWith(prefix, StringComparison.Ordinal) == true),
         });
 
         options.Define(new EventDefinition
@@ -95,6 +97,13 @@ public static class GuardianEvents
 
     private static JsonObject Obj(string json) => (JsonObject)JsonNode.Parse(json.Replace("@NS@", """["string","null"]"""))!;
 
+    private static bool HasArgument(JsonObject? arguments, string name) =>
+        arguments is not null && arguments.TryGetPropertyValue(name, out var value) && value is not null;
+
+    /// <summary>The argument as a string; null when it is missing or not a string (a non-string never matches).</summary>
     private static string? Argument(JsonObject? arguments, string name) =>
-        arguments is not null && arguments.TryGetPropertyValue(name, out var value) ? (string?)value : null;
+        arguments is not null && arguments.TryGetPropertyValue(name, out var value) ? AsString(value) : null;
+
+    private static string? AsString(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 }

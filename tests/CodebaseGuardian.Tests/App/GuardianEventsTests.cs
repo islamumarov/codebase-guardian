@@ -82,6 +82,18 @@ public class GuardianEventsTests
         Assert.False(files(new JsonObject { ["pathPrefix"] = "tests/" }, changed));
     }
 
+    [Fact]
+    public void Matches_treats_non_string_arguments_as_no_match()
+    {
+        var options = new Mcp.Events.EventsOptions();
+        GuardianEvents.Register(options);
+        var commit = options.Definitions.Single(d => d.Name == "repo.commit.created").Matches!;
+        var files = options.Definitions.Single(d => d.Name == "repo.files.changed").Matches!;
+
+        Assert.False(commit(new JsonObject { ["branch"] = 5 }, new JsonObject { ["branch"] = "main" }));
+        Assert.False(files(new JsonObject { ["pathPrefix"] = 5 }, new JsonObject { ["paths"] = new JsonArray("a") }));
+    }
+
     private static void AssertProperties(JsonObject definition, params string[] expected)
     {
         var properties = definition["payloadSchema"]!["properties"]!.AsObject().Select(p => p.Key).ToHashSet();
