@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using CodebaseGuardian.Tests.Infrastructure;
 using Mcp.Events;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
 
 namespace CodebaseGuardian.Tests.Events;
@@ -14,9 +15,16 @@ public sealed class EventsPollProtocolTests
     private static JsonObject Obj(string json) => (JsonObject)JsonNode.Parse(json)!;
 
     private static Task<InProcessMcpServer> StartAsync(
-        Action<EventsOptions>? tweak = null, bool faultyMatcher = false) =>
+        Action<EventsOptions>? tweak = null, bool faultyMatcher = false, FakeTimeProvider? time = null) =>
         InProcessMcpServer.StartAsync(
-            (_, _, builder) => builder.WithEvents(o =>
+            (services, _, builder) =>
+            {
+                if (time is not null)
+                {
+                    services.AddSingleton<TimeProvider>(time);
+                }
+
+                builder.WithEvents(o =>
             {
                 o.Define(new EventDefinition
                 {
@@ -44,7 +52,8 @@ public sealed class EventsPollProtocolTests
                 }
 
                 tweak?.Invoke(o);
-            }),
+                });
+            },
             cancellationToken: Ct);
 
     private static Task<JsonObject> PollAsync(InProcessMcpServer server, JsonObject p) =>
@@ -207,16 +216,39 @@ public sealed class EventsPollProtocolTests
     [Fact]
     public async Task Poll_with_maxAgeMs_zero_skips_events_and_reports_truncation()
     {
-        await using var server = await StartAsync();
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 10, 4, 12, 0, 0, TimeSpan.Zero));
+        await using var server = await StartAsync(time: time);
         var first = await PollAsync(server, Obj("""{"name":"test.beta"}"""));
         await Publish(server, "test.beta", Obj("{}"));
-        await Task.Delay(20, Ct);
+        time.Advance(TimeSpan.FromSeconds(1));
 
         var p = Obj("""{"name":"test.beta","maxAgeMs":0}""");
         p["cursor"] = (string?)first["cursor"];
         var result = await PollAsync(server, p);
         Assert.Empty(result["events"]!.AsArray());
         Assert.True((bool)result["truncated"]!);
+    }
+
+    [Fact]
+    public async Task Poll_without_maxEvents_uses_DefaultMaxEvents_and_reports_the_configured_PollInterval()
+    {
+        await using var server = await StartAsync(o =>
+        {
+            o.DefaultMaxEvents = 2;
+            o.PollInterval = TimeSpan.FromMilliseconds(1500);
+        });
+        var first = await PollAsync(server, Obj("""{"name":"test.beta"}"""));
+        for (var i = 0; i < 3; i++)
+        {
+            await Publish(server, "test.beta", Obj("{}"));
+        }
+
+        var p = Obj("""{"name":"test.beta"}""");
+        p["cursor"] = (string?)first["cursor"];
+        var result = await PollAsync(server, p);
+        Assert.Equal(2, result["events"]!.AsArray().Count);
+        Assert.True((bool)result["hasMore"]!);
+        Assert.Equal(1500, (long?)result["nextPollMs"]);
     }
 
     [Fact]

@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -6,10 +8,11 @@ using ModelContextProtocol.Server;
 
 namespace Mcp.Events;
 
-internal sealed class EventsConfigureOptions(IOptions<EventsOptions> eventsOptions, IEventLog log)
+internal sealed class EventsConfigureOptions(IOptions<EventsOptions> eventsOptions, IEventLog log, ILogger<EventsConfigureOptions>? logger = null)
     : IConfigureOptions<McpServerOptions>
 {
     private readonly EventsOptions _options = eventsOptions.Value;
+    private readonly ILogger _logger = logger ?? NullLogger<EventsConfigureOptions>.Instance;
 
     public void Configure(McpServerOptions options)
     {
@@ -33,7 +36,7 @@ internal sealed class EventsConfigureOptions(IOptions<EventsOptions> eventsOptio
             parsed.Arguments,
             parsed.Cursor,
             parsed.MaxAge,
-            parsed.MaxEvents ?? Math.Clamp(_options.DefaultMaxEvents, 1, Math.Max(1, _options.MaxEventsLimit)));
+            parsed.MaxEvents ?? EventsRequestParser.ClampMaxEvents(_options, _options.DefaultMaxEvents));
 
         EventReadResult read;
         try
@@ -47,6 +50,7 @@ internal sealed class EventsConfigureOptions(IOptions<EventsOptions> eventsOptio
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // A Matches predicate is application code; its failure is a server fault whose detail must not reach the client.
+            _logger.LogError(ex, "Reading events for '{EventName}' failed.", parsed.Definition.Name);
             throw new McpProtocolException($"Event '{parsed.Definition.Name}' could not be read.", McpErrorCode.InternalError);
         }
 

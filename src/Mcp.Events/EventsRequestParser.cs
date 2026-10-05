@@ -51,7 +51,7 @@ internal static class EventsRequestParser
         string? cursor = null;
         if (parameters.TryGetPropertyValue("cursor", out var cursorNode) && cursorNode is not null)
         {
-            cursor = TryGetString(parameters, "cursor", out var c) && c is not null
+            cursor = cursorNode is JsonValue cv && cv.GetValueKind() == JsonValueKind.String && cv.TryGetValue<string>(out var c)
                 ? c
                 : throw InvalidParams("params.cursor must be a string or null.");
             try
@@ -85,11 +85,15 @@ internal static class EventsRequestParser
                 throw InvalidParams("params.maxEvents must be an integer.");
             }
 
-            maxEvents = (int)Math.Clamp(requested, 1, Math.Max(1, options.MaxEventsLimit));
+            maxEvents = ClampMaxEvents(options, requested);
         }
 
         return new EventsRequest(definition, arguments, cursor, maxAge, maxEvents);
     }
+
+    /// <summary>Clamps a requested (or default) event count to 1..MaxEventsLimit.</summary>
+    public static int ClampMaxEvents(EventsOptions options, double requested) =>
+        (int)Math.Clamp(requested, 1, Math.Max(1, options.MaxEventsLimit));
 
     private static bool TryGetString(JsonObject obj, string key, out string? value)
     {
