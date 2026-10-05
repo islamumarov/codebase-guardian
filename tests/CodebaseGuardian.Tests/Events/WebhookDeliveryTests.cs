@@ -346,9 +346,9 @@ public sealed class WebhookDeliveryTests
         for (var i = 1; i <= 4; i++) await PublishAsync(server, "e" + i);
         await WaitUntilAsync(() => Task.FromResult(!store.Snapshot().Single().Active));
 
+        var attemptsAtRefresh = receiver.Received.Count; // a suspended worker makes no attempts
         var refresh = await SubscribeAsync(server, receiver); // still failing
         Assert.False(refresh["deliveryStatus"]!["active"]!.GetValue<bool>());
-        var attemptsAtRefresh = receiver.Received.Count;
         await WaitUntilAsync(() => Task.FromResult(receiver.Received.Count > attemptsAtRefresh));
         await Task.Delay(300, Ct);
 
