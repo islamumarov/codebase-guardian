@@ -17,7 +17,7 @@ public sealed class DependencyTools(IDependencyAuditor auditor)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    [McpServerTool(Name = "audit_dependencies", ReadOnly = true, Destructive = false, OpenWorld = true)]
+    [McpServerTool(Name = "audit_dependencies", ReadOnly = true, Destructive = false, OpenWorld = true, UseStructuredContent = true, OutputSchemaType = typeof(DependencyAuditReport))]
     [Description("Audits the project's NuGet and npm dependencies for known vulnerabilities and, optionally, outdated versions. Returns one report per ecosystem found in the repository with its status (ok, skipped when the toolchain is not installed, or failed with a reason), the vulnerable packages with severity and advisory link, and the outdated packages with current and latest versions. Queries the package feeds, so it needs network access and can take a while.")]
     public Task<CallToolResult> AuditDependencies(
         IProgress<ProgressNotificationValue> progress,
@@ -43,10 +43,4 @@ public sealed class DependencyTools(IDependencyAuditor auditor)
         var parts = report.Ecosystems.Select(e => e.Status == "ok" ? e.Ecosystem : $"{e.Ecosystem} {e.Status}");
         return $"{report.VulnerableCount} vulnerable, {report.OutdatedCount} outdated packages ({string.Join(", ", parts)}).";
     }
-}
-
-// Progress<T> posts to the thread pool; the relay reports in order, on the caller's thread.
-file sealed class ProgressRelay(IProgress<ProgressNotificationValue> inner) : IProgress<string>
-{
-    public void Report(string message) => inner.Report(new ProgressNotificationValue { Progress = 0, Message = message });
 }

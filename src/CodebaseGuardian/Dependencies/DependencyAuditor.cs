@@ -63,21 +63,42 @@ public sealed class DependencyAuditor(IProcessRunner processes, IGitRepository g
 
         var vulnerable = NuGetAuditParser.ParseVulnerable(await RunAsync(
             root, "dotnet", ["list", target, "package", "--vulnerable", "--include-transitive", "--format", "json", "--output-version", "1"], [0], ct));
-        var outdated = includeOutdated
-            ? NuGetAuditParser.ParseOutdated(await RunAsync(
-                root, "dotnet", ["list", target, "package", "--outdated", "--format", "json", "--output-version", "1"], [0], ct))
-            : [];
-        return new EcosystemReport("nuget", "ok", null, vulnerable, outdated);
+        return await WithOutdatedAsync("nuget", "dotnet", vulnerable, includeOutdated, async () => NuGetAuditParser.ParseOutdated(await RunAsync(
+            root, "dotnet", ["list", target, "package", "--outdated", "--format", "json", "--output-version", "1"], [0], ct)));
     }
 
     private async Task<EcosystemReport> AuditNpmAsync(string root, bool includeOutdated, CancellationToken ct)
     {
         // npm exits 1 when it found vulnerabilities or outdated packages; that is a result, not a failure.
         var vulnerable = NpmAuditParser.ParseAudit(await RunAsync(root, "npm", ["audit", "--json"], [0, 1], ct));
-        var outdated = includeOutdated
-            ? NpmAuditParser.ParseOutdated(await RunAsync(root, "npm", ["outdated", "--json"], [0, 1], ct))
-            : [];
-        return new EcosystemReport("npm", "ok", null, vulnerable, outdated);
+        return await WithOutdatedAsync("npm", "npm", vulnerable, includeOutdated, async () =>
+            NpmAuditParser.ParseOutdated(await RunAsync(root, "npm", ["outdated", "--json"], [0, 1], ct)));
+    }
+
+    // A failing outdated check must not discard the vulnerabilities that were already found.
+    private static async Task<EcosystemReport> WithOutdatedAsync(
+        string ecosystem, string tool, IReadOnlyList<VulnerablePackage> vulnerable, bool includeOutdated,
+        Func<Task<IReadOnlyList<OutdatedPackage>>> outdatedCheck)
+    {
+        if (!includeOutdated)
+        {
+            return new EcosystemReport(ecosystem, "ok", null, vulnerable, []);
+        }
+
+        try
+        {
+            return new EcosystemReport(ecosystem, "ok", null, vulnerable, await outdatedCheck());
+        }
+        catch (JsonException exception)
+        {
+            return Partial($"could not parse {tool} outdated output: {exception.Message}");
+        }
+        catch (CommandFailedException exception)
+        {
+            return Partial($"outdated check failed: {exception.Message}");
+        }
+
+        EcosystemReport Partial(string reason) => new(ecosystem, "failed", Truncate(reason), vulnerable, []);
     }
 
     private async Task<string> RunAsync(string root, string fileName, string[] arguments, int[] acceptedExitCodes, CancellationToken ct)

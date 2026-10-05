@@ -149,6 +149,24 @@ public class DependencyAuditorTests
     }
 
     [Fact]
+    public async Task A_failing_outdated_check_keeps_the_vulnerable_results_and_names_the_failure()
+    {
+        using var repo = Repo("package.json");
+        var fake = new FakeProcessRunner()
+            .On(s => s.FileName == "npm" && s.Arguments[0] == "audit", FakeProcessRunner.Result(1, NpmAuditParserTests.AuditJson))
+            .On(s => s.FileName == "npm" && s.Arguments[0] == "outdated", FakeProcessRunner.Result(2, "", "registry unreachable"));
+
+        var report = await Create(repo, fake).AuditAsync(true, null, Ct);
+
+        var npm = Assert.Single(report.Ecosystems);
+        Assert.Equal("failed", npm.Status);
+        Assert.Equal(2, npm.Vulnerable.Count);
+        Assert.Empty(npm.Outdated);
+        Assert.Contains("outdated check failed", npm.Reason);
+        Assert.Contains("registry unreachable", npm.Reason);
+    }
+
+    [Fact]
     public async Task A_timeout_fails_the_ecosystem()
     {
         using var repo = Repo("package.json");

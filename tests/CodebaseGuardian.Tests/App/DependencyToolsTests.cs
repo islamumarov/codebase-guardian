@@ -36,6 +36,9 @@ public class DependencyToolsTests
         Assert.True(tool.ProtocolTool.Annotations?.ReadOnlyHint);
         Assert.True(tool.ProtocolTool.Annotations?.OpenWorldHint);
         Assert.True(tool.JsonSchema.GetProperty("properties").TryGetProperty("includeOutdated", out _));
+        var output = tool.ProtocolTool.OutputSchema!.Value;
+        Assert.Equal("object", output.GetProperty("type").GetString());
+        Assert.True(output.GetProperty("properties").TryGetProperty("ecosystems", out _));
     }
 
     [Fact]

@@ -37,9 +37,3 @@ public sealed class CheckTools(ICheckRunner runner)
             }
         });
 }
-
-// Progress<T> posts to the thread pool; the relay reports in order, on the caller's thread.
-file sealed class ProgressRelay(IProgress<ProgressNotificationValue> inner) : IProgress<string>
-{
-    public void Report(string message) => inner.Report(new ProgressNotificationValue { Progress = 0, Message = message });
-}
