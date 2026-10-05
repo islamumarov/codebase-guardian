@@ -31,7 +31,7 @@ public sealed class GitHubEventPollerTests : IAsyncLifetime
         _api.Map(HttpMethod.Get, "/repos/acme/widgets/issues", (_, _) => _issuesOverride?.Invoke() ?? Json(_issues))
             .Map(HttpMethod.Get, "/repos/acme/widgets/issues/comments", (_, _) => Json(_issueComments))
             .Map(HttpMethod.Get, "/repos/acme/widgets/pulls/comments", (_, _) => Json(_reviewComments))
-            .Map(HttpMethod.Get, "/repos/acme/widgets/actions/runs", (_, _) => Json(_runs));
+            .Map(HttpMethod.Get, "/repos/acme/widgets/actions/runs", (request, _) => Json(RunsCreatedSince(request)));
         _repo = TempGitRepo.Create();
         _server = await GuardianTestHost.StartAsync(
             _repo.Path,
@@ -75,10 +75,23 @@ public sealed class GitHubEventPollerTests : IAsyncLifetime
          "created_at":"{{Stamp(createdAt)}}","path":"src/A.cs","line":42}
         """;
 
-    private static string RunJson(long id, int attempt, DateTimeOffset updatedAt, string branch = "main", string conclusion = "failure") =>
+    // Like GitHub, honours the "created=>=<timestamp>" query by each run's created_at.
+    private string RunsCreatedSince(HttpRequestMessage request)
+    {
+        var query = Uri.UnescapeDataString(request.RequestUri!.Query);
+        var match = System.Text.RegularExpressions.Regex.Match(query, @"created=>=(?<ts>[^&]+)");
+        var from = match.Success ? DateTimeOffset.Parse(match.Groups["ts"].Value, System.Globalization.CultureInfo.InvariantCulture) : DateTimeOffset.MinValue;
+        var runs = JsonNode.Parse(_runs)!["workflow_runs"]!.AsArray()
+            .Where(run => DateTimeOffset.Parse((string)run!["created_at"]!, System.Globalization.CultureInfo.InvariantCulture) >= from)
+            .Select(run => run!.DeepClone());
+        return new JsonObject { ["workflow_runs"] = new JsonArray([.. runs]) }.ToJsonString();
+    }
+
+    private static string RunJson(
+        long id, int attempt, DateTimeOffset updatedAt, string branch = "main", string conclusion = "failure", DateTimeOffset? createdAt = null) =>
         $$"""
         {"id":{{id}},"run_attempt":{{attempt}},"name":"CI","head_branch":"{{branch}}","head_sha":"abc123",
-         "html_url":"https://github.com/acme/widgets/actions/runs/{{id}}","conclusion":"{{conclusion}}","updated_at":"{{Stamp(updatedAt)}}"}
+         "html_url":"https://github.com/acme/widgets/actions/runs/{{id}}","conclusion":"{{conclusion}}","created_at":"{{Stamp(createdAt ?? updatedAt)}}","updated_at":"{{Stamp(updatedAt)}}"}
         """;
 
     private GitHubEventPoller Poller => _server.Services.GetRequiredService<GitHubEventPoller>();
@@ -198,6 +211,23 @@ public sealed class GitHubEventPollerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_rerun_of_a_run_created_before_the_query_window_is_still_published()
+    {
+        var (_, poll) = await WatchAsync();
+        await CycleAsync();
+        _time.Advance(TimeSpan.FromHours(1));
+        await CycleAsync();
+        _time.Advance(TimeSpan.FromHours(1));
+        // Created before the poller started, re-run (attempt 2) after: its created_at is older than the cycle's overlap window.
+        _runs = $$"""{"workflow_runs":[{{RunJson(77, 2, T0.AddHours(2), createdAt: T0.AddHours(-2))}}]}""";
+
+        await CycleAsync();
+
+        var published = Assert.Single(await poll(GuardianEventNames.GithubCiFailed, null));
+        Assert.Equal("gh_run_77_2", (string)published["eventId"]!);
+    }
+
+    [Fact]
     public async Task Secrets_in_relayed_text_are_redacted_and_long_bodies_are_cut()
     {
         var (_, poll) = await WatchAsync();
@@ -252,8 +282,15 @@ public sealed class GitHubEventPollerTests : IAsyncLifetime
             cancellationToken: Ct);
         var poller = server.Services.GetRequiredService<GitHubEventPoller>();
 
+        var cursor = await EventsPolling.GetCursorAsync(server, Ct);
+
         await poller.PollOnceAsync(Ct);
         await poller.PollOnceAsync(Ct);
+
+        foreach (var name in new[] { GuardianEventNames.GithubIssueOpened, GuardianEventNames.GithubPrCommentCreated, GuardianEventNames.GithubCiFailed })
+        {
+            Assert.Empty((await EventsPolling.PollAsync(server, name, cursor, Ct)).Events);
+        }
     }
 
     [Fact]

@@ -25,6 +25,10 @@ public sealed class GitHubEventPoller(
     internal const int MaxRememberedIds = 10_000;
     private static readonly TimeSpan Overlap = TimeSpan.FromMinutes(5);
 
+    // A re-run keeps the created_at of its first attempt, and the runs API can only filter by creation time, so
+    // runs are queried further back. UpdatedAt >= startedAt and the published-id set keep that from republishing.
+    internal static readonly TimeSpan RunLookback = TimeSpan.FromHours(24);
+
     private readonly HashSet<string> _published = [];
     private readonly Queue<string> _publishedOrder = new();
     private DateTimeOffset? _startedAt;
@@ -64,7 +68,7 @@ public sealed class GitHubEventPoller(
         {
             await PublishIssuesAsync(since, startedAt, cancellationToken);
             await PublishCommentsAsync(since, startedAt, cancellationToken);
-            await PublishRunsAsync(since, startedAt, cancellationToken);
+            await PublishRunsAsync(since < now - RunLookback ? since : now - RunLookback, startedAt, cancellationToken);
             _lastCycleStart = now;
             _warnedUnavailable = false;
         }
