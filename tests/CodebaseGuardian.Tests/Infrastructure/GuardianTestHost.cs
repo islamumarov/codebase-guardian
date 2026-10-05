@@ -28,6 +28,9 @@ public static class GuardianTestHost
         {
             [Key(nameof(GuardianOptions.RepositoryPath))] = repositoryPath,
             [Key(nameof(GuardianOptions.WatchEnabled))] = "false",
+            // No test may reach api.github.com, even on a machine with GITHUB_TOKEN set or `gh` logged in.
+            [Key("GitHub:Enabled")] = "false",
+            [Key("GitHub:PollEnabled")] = "false",
         };
 
         // The skills that ship with the application, once they exist: the same folder the application itself

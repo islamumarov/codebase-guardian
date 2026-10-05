@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using CodebaseGuardian.Checks;
 using CodebaseGuardian.Dependencies;
 using CodebaseGuardian.Git;
+using CodebaseGuardian.GitHub;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
 using CodebaseGuardian.Security;
@@ -70,6 +71,8 @@ public static class GuardianServiceCollectionExtensions
 
         services.AddSingleton<IDependencyAuditor, DependencyAuditor>();
 
+        services.AddGitHubIntegration(configuration);
+
         // The watcher does nothing unless Guardian:WatchEnabled is set.
         services.AddHostedService<RepositoryWatcher>();
 
@@ -85,6 +88,20 @@ public static class GuardianServiceCollectionExtensions
             .WithTools<DependencyTools>()
             .WithResources<RepositoryResources>()
             .WithResources<CheckResources>();
+    }
+
+    /// <summary>Binds <see cref="GitHubOptions"/> and registers the GitHub token provider, repository resolver and REST client.</summary>
+    internal static IServiceCollection AddGitHubIntegration(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddSingleton<IValidateOptions<GitHubOptions>, GitHubOptionsValidator>();
+        services.AddOptions<GitHubOptions>()
+            .Bind(configuration.GetSection(GitHubOptions.SectionName))
+            .ValidateOnStart();
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<IGitHubTokenProvider, GitHubTokenProvider>();
+        services.AddSingleton<IGitHubRepositoryResolver, GitHubRepositoryResolver>();
+        services.AddHttpClient<IGitHubClient, GitHubClient>(GitHubClient.HttpClientName);
+        return services;
     }
 
     private static string? SkillsDirectoryFor(IConfiguration configuration)
