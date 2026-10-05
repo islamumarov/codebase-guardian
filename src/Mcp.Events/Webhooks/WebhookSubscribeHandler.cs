@@ -72,6 +72,12 @@ internal sealed class WebhookSubscribeHandler(
                 DateTimeOffset? failedSince;
                 lock (store.SyncRoot)
                 {
+                    // An unsubscribe between the lookup and this lock must not be reported as a refresh.
+                    if (!store.TryGet(id, out var still) || !ReferenceEquals(still, existing))
+                    {
+                        continue;
+                    }
+
                     if (!CryptographicOperations.FixedTimeEquals(existing.Secret, secret))
                     {
                         existing.PreviousSecret = existing.Secret;

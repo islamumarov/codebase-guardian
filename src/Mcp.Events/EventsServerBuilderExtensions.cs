@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -35,6 +36,7 @@ public static class EventsServerBuilderExtensions
             sp.GetRequiredService<WebhookSubscriptionStore>(),
             sp.GetRequiredService<IWebhookSender>(),
             sp.GetRequiredService<TimeProvider>()));
+        builder.Services.AddHostedService<WebhookDispatcher>();
         builder.Services.AddSingleton<IConfigureOptions<McpServerOptions>, EventsConfigureOptions>();
         // Stream handlers have no server property on the request; stash the request-bound server for them (SDK notes section 3).
         builder.WithMessageFilters(filters => filters.AddIncomingFilter(next => async (context, cancellationToken) =>
