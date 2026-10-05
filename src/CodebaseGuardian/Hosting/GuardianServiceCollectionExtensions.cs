@@ -1,7 +1,9 @@
 using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using CodebaseGuardian.Checks;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
@@ -37,6 +39,8 @@ public static class GuardianServiceCollectionExtensions
             .PostConfigure(options => options.RepositoryPath = ToFullPath(options.RepositoryPath))
             .ValidateOnStart();
 
+        services.Configure<CheckOptions>(configuration.GetSection(CheckOptions.SectionName));
+        services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IProcessRunner, ProcessRunner>();
         services.AddSingleton<IGitRepository, GitRepository>();
 
@@ -46,6 +50,14 @@ public static class GuardianServiceCollectionExtensions
         services.AddOptions<McpServerOptions>().Configure<IEnumerable<IInstructionsContributor>>(
             (options, contributors) => options.ServerInstructions = GuardianInstructions.Compose(contributors));
 
+        services.AddSingleton<ICheckCommandResolver, CheckCommandResolver>();
+        services.AddSingleton<CheckRunStore>();
+        services.AddSingleton<ICheckRunner, CheckRunner>();
+        if (configuration.GetValue<bool>($"{GuardianOptions.SectionName}:{nameof(GuardianOptions.AutoChecks)}"))
+        {
+            services.AddSingleton<IRepositoryChangeHandler, AutoChecksCommitHandler>();
+        }
+
         // The watcher does nothing unless Guardian:WatchEnabled is set.
         services.AddHostedService<RepositoryWatcher>();
 
@@ -54,7 +66,9 @@ public static class GuardianServiceCollectionExtensions
             .WithEvents(GuardianEvents.Register)
             .WithTools<RepositoryTools>()
             .WithTools<EventTools>()
-            .WithResources<RepositoryResources>();
+            .WithTools<CheckTools>()
+            .WithResources<RepositoryResources>()
+            .WithResources<CheckResources>();
     }
 
     // Empty values are left for validation to report; GetFullPath would throw for them.
