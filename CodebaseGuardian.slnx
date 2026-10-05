@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/GuardianWatch/GuardianWatch.csproj" />
+  </Folder>
   <Project Path="src/CodebaseGuardian/CodebaseGuardian.csproj" />
   <Project Path="src/Mcp.Events/Mcp.Events.csproj" />
   <Project Path="src/Mcp.Skills/Mcp.Skills.csproj" />
