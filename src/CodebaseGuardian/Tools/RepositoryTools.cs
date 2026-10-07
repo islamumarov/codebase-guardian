@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using CodebaseGuardian.Git;
+using CodebaseGuardian.Sources;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -10,7 +11,7 @@ namespace CodebaseGuardian.Tools;
 public sealed record RecentCommits(IReadOnlyList<CommitInfo> Commits);
 
 [McpServerToolType]
-public sealed class RepositoryTools(IGitRepository git)
+public sealed class RepositoryTools(IRepositorySource git)
 {
     private const int MaxCommits = 100;
     private const int MaxPatchBytes = 200_000;

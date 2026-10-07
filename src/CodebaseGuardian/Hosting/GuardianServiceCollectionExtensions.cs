@@ -63,7 +63,9 @@ public static class GuardianServiceCollectionExtensions
         services.Configure<CheckOptions>(configuration.GetSection(CheckOptions.SectionName));
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IProcessRunner, ProcessRunner>();
-        services.AddSingleton<IGitRepository, GitRepository>();
+        services.AddSingleton<GitRepository>();
+        services.AddSingleton<IGitRepository>(sp => sp.GetRequiredService<GitRepository>());
+        services.AddSingleton<IRepositorySource>(sp => sp.GetRequiredService<GitRepository>());
 
         // Instructions are composed when McpServerOptions are first built, so contributors that are
         // registered after this call (by tests, or by features added later) are included.

@@ -1,13 +1,14 @@
 using System.ComponentModel;
 using System.Text.Json;
 using CodebaseGuardian.Git;
+using CodebaseGuardian.Sources;
 using CodebaseGuardian.Tools;
 using ModelContextProtocol.Server;
 
 namespace CodebaseGuardian.Resources;
 
 [McpServerResourceType]
-public sealed class RepositoryResources(IGitRepository git)
+public sealed class RepositoryResources(IRepositorySource git)
 {
     private const int RecentCommitCount = 20;
 

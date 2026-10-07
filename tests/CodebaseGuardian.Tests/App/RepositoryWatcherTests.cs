@@ -343,6 +343,8 @@ public class RepositoryWatcherTests
         public List<string[]> Calls { get; } = [];
 
         public string RootPath => root;
+        public CodebaseGuardian.Sources.RepositorySourceKind Kind => CodebaseGuardian.Sources.RepositorySourceKind.Local;
+        public string DisplayName => root;
         public Task<string?> GetCurrentBranchAsync(CancellationToken ct = default) => Task.FromResult<string?>("main");
         public Task<IReadOnlyDictionary<string, string>> GetBranchHeadsAsync(CancellationToken ct = default) => Task.FromResult(Heads);
 
@@ -371,6 +373,8 @@ public class RepositoryWatcherTests
         public Task<DiffSummary> GetStagedDiffAsync(int maxPatchBytes, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<string>> ListFilesAsync(CancellationToken ct = default) => throw new NotSupportedException();
         public Task<string?> GetRemoteUrlAsync(string remote = "origin", CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<byte[]?> ReadFileAsync(string path, CancellationToken ct = default) => throw new NotSupportedException();
+        public IAsyncEnumerable<CodebaseGuardian.Sources.SnapshotFile> ReadSnapshotAsync(CancellationToken ct = default) => throw new NotSupportedException();
     }
 
     private sealed class RecordingHandler : IRepositoryChangeHandler

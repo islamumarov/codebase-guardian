@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using CodebaseGuardian.Git;
+using CodebaseGuardian.Sources;
 using Microsoft.Extensions.Logging;
 
 namespace CodebaseGuardian.Security;
@@ -23,7 +24,7 @@ public interface ISecretScanner
 
 public sealed class SecretScanner(IGitRepository git, ILogger<SecretScanner> logger) : ISecretScanner
 {
-    internal const long MaxFileBytes = 1024 * 1024;
+    internal const long MaxFileBytes = SnapshotLimits.MaxFileBytes;
     internal const int MaxPatchBytes = 5 * 1024 * 1024;
     private const int BinarySniffBytes = 8192;
 

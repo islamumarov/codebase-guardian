@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using CodebaseGuardian.Checks;
 using CodebaseGuardian.Dependencies;
-using CodebaseGuardian.Git;
+using CodebaseGuardian.Sources;
 using CodebaseGuardian.Security;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
@@ -15,7 +15,7 @@ public sealed class FullScanService(
     IDependencyAuditor dependencies,
     ICheckRunner checks,
     ICheckCommandResolver resolver,
-    IGitRepository git,
+    IRepositorySource source,
     IEventPublisher publisher,
     ScanReportStore store,
     TimeProvider time) : IFullScanService
@@ -27,7 +27,7 @@ public sealed class FullScanService(
         var errors = new List<string>();
 
         string? headSha = null;
-        await Step("head", async () => headSha = await git.GetHeadShaAsync(cancellationToken));
+        await Step("head", async () => headSha = await source.GetHeadShaAsync(cancellationToken));
 
         progress?.Report("secrets");
         IReadOnlyList<SecretFinding> findings = [];
@@ -59,7 +59,7 @@ public sealed class FullScanService(
         cancellationToken.ThrowIfCancellationRequested();
         var draft = new ScanReport(
             NewScanId(startedAt), startedAt, time.GetElapsedTime(clock), headSha, findings, Redact(audit), Redact(run), skipped, errors, "");
-        var report = draft with { Markdown = ScanReportRenderer.Render(draft, git.RootPath) };
+        var report = draft with { Markdown = ScanReportRenderer.Render(draft, source.DisplayName) };
 
         store.Add(report);
         await publisher.PublishAsync(GuardianEventNames.ScanCompleted, Payload(report), cancellationToken: cancellationToken);
