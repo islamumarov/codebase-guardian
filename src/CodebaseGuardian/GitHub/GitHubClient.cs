@@ -1,30 +1,19 @@
 using System.Globalization;
 using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
-using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using CodebaseGuardian.Git;
 using Microsoft.Extensions.Options;
 
 namespace CodebaseGuardian.GitHub;
 
-public sealed partial class GitHubClient : IGitHubClient
+public sealed class GitHubClient : IGitHubClient
 {
     public const string HttpClientName = "github";
 
-    private const int MaxPages = 5;
-    private const int MaxErrorMessageLength = 500;
     private const string Disabled = "GitHub integration is disabled (Guardian:GitHub:Enabled=false).";
     private const string NoToken = "No GitHub token: set GITHUB_TOKEN or run `gh auth login`.";
     private const string NoRepository =
         "The origin remote is not a github.com repository; set Guardian:GitHub:Owner and Guardian:GitHub:Repository.";
-
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-    };
 
     private readonly HttpClient _http;
     private readonly GitHubOptions _options;
@@ -61,7 +50,8 @@ public sealed partial class GitHubClient : IGitHubClient
         GitRevision.Require(branch, nameof(branch));
         var context = await PrepareAsync(ct);
         var escaped = string.Join('/', branch.Split('/').Select(Uri.EscapeDataString));
-        using var response = await SendAsync(context, HttpMethod.Get, context.Path("branches", escaped), null, ct, allowNotFound: true);
+        using var response = await Http().SendAsync(
+            HttpMethod.Get, context.Path("branches", escaped), null, context.Token, ct, allow: HttpStatusCode.NotFound);
         return response.StatusCode != HttpStatusCode.NotFound;
     }
 
@@ -155,163 +145,13 @@ public sealed partial class GitHubClient : IGitHubClient
         return escape ? Uri.EscapeDataString(text) : text;
     }
 
-    private async Task<T> SendJsonAsync<T>(Context context, HttpMethod method, string path, object? body, CancellationToken ct)
-    {
-        using var response = await SendAsync(context, method, path, body, ct);
-        return await response.Content.ReadFromJsonAsync<T>(Json, ct)
-            ?? throw new GitHubApiException((int)response.StatusCode, "GitHub returned an empty response.");
-    }
+    private GitHubHttp Http() => new(_http, _options, _time);
 
-    /// <summary>Follows <c>Link: rel="next"</c> for at most <see cref="MaxPages"/> pages, and never off the API host.</summary>
-    private async Task<List<T>> ListAsync<T>(Context context, string firstPath, CancellationToken ct)
-    {
-        var results = new List<T>();
-        string? next = firstPath;
-        for (var page = 0; page < MaxPages && next is not null; page++)
-        {
-            using var response = await SendAsync(context, HttpMethod.Get, next, null, ct);
-            var content = await response.Content.ReadAsStringAsync(ct);
-            if (content.TrimStart().StartsWith('['))
-            {
-                results.AddRange(JsonSerializer.Deserialize<List<T>>(content, Json) ?? []);
-            }
-            else if (JsonSerializer.Deserialize<T>(content, Json) is { } single)
-            {
-                results.Add(single);
-            }
+    private Task<T> SendJsonAsync<T>(Context context, HttpMethod method, string path, object? body, CancellationToken ct) =>
+        Http().SendJsonAsync<T>(method, path, body, context.Token, ct);
 
-            next = NextLink(response);
-        }
-
-        return results;
-    }
-
-    private string? NextLink(HttpResponseMessage response)
-    {
-        if (!response.Headers.TryGetValues("Link", out var values))
-        {
-            return null;
-        }
-
-        foreach (var match in LinkPattern().Matches(string.Join(',', values)).Cast<Match>())
-        {
-            if (match.Groups["rel"].Value == "next"
-                && Uri.TryCreate(_http.BaseAddress, match.Groups["url"].Value, out var uri)
-                && uri.Scheme == _http.BaseAddress!.Scheme
-                && uri.Host == _http.BaseAddress.Host
-                && uri.Port == _http.BaseAddress.Port)
-            {
-                return uri.AbsoluteUri;
-            }
-        }
-
-        return null;
-    }
-
-    [GeneratedRegex("<(?<url>[^>]+)>\\s*;\\s*rel=\"(?<rel>[^\"]+)\"")]
-    private static partial Regex LinkPattern();
-
-    private async Task<HttpResponseMessage> SendAsync(
-        Context context, HttpMethod method, string pathOrUrl, object? body, CancellationToken ct, bool allowNotFound = false)
-    {
-        using var request = new HttpRequestMessage(method, pathOrUrl);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
-        request.Headers.UserAgent.ParseAdd("codebase-guardian");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", context.Token);
-        if (body is not null)
-        {
-            request.Content = JsonContent.Create(body, options: Json);
-        }
-
-        var response = await _http.SendAsync(request, ct);
-        if (response.IsSuccessStatusCode || (allowNotFound && response.StatusCode == HttpStatusCode.NotFound))
-        {
-            return response;
-        }
-
-        using (response)
-        {
-            throw await ToExceptionAsync(response, context.Token, ct);
-        }
-    }
-
-    private async Task<Exception> ToExceptionAsync(HttpResponseMessage response, string token, CancellationToken ct)
-    {
-        var status = (int)response.StatusCode;
-        if (status == 401)
-        {
-            return new GitHubApiException(401, "GitHub rejected the token (401).");
-        }
-
-        if (status is 403 or 429)
-        {
-            if (TryHeader(response, "retry-after", out var retryAfter)
-                && double.TryParse(retryAfter, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
-            {
-                return new GitHubRateLimitException(_time.GetUtcNow().AddSeconds(seconds));
-            }
-
-            if (TryHeader(response, "x-ratelimit-remaining", out var remaining) && remaining == "0"
-                && TryHeader(response, "x-ratelimit-reset", out var reset)
-                && long.TryParse(reset, NumberStyles.Integer, CultureInfo.InvariantCulture, out var epoch))
-            {
-                return new GitHubRateLimitException(DateTimeOffset.FromUnixTimeSeconds(epoch));
-            }
-        }
-
-        var message = Describe(await response.Content.ReadAsStringAsync(ct), response.ReasonPhrase);
-        message = message.Replace(token, "***", StringComparison.Ordinal);
-        return new GitHubApiException(status, message.Length > MaxErrorMessageLength ? message[..MaxErrorMessageLength] : message);
-    }
-
-    private static bool TryHeader(HttpResponseMessage response, string name, out string value)
-    {
-        value = response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() ?? string.Empty : string.Empty;
-        return value.Length > 0;
-    }
-
-    private static string Describe(string body, string? fallback)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            var root = document.RootElement;
-            var parts = new List<string>();
-            if (root.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String)
-            {
-                parts.Add(message.GetString()!);
-            }
-
-            if (root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var error in errors.EnumerateArray())
-                {
-                    var text = error.ValueKind switch
-                    {
-                        JsonValueKind.String => error.GetString(),
-                        JsonValueKind.Object when error.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String => m.GetString(),
-                        _ => null,
-                    };
-                    if (!string.IsNullOrEmpty(text))
-                    {
-                        parts.Add(text);
-                    }
-                }
-            }
-
-            if (parts.Count > 0)
-            {
-                return string.Join("; ", parts);
-            }
-        }
-        catch (JsonException)
-        {
-            // Not a JSON error body; fall through to the status text.
-        }
-
-        return string.IsNullOrWhiteSpace(fallback) ? "GitHub request failed." : fallback;
-    }
+    private Task<List<T>> ListAsync<T>(Context context, string firstPath, CancellationToken ct) =>
+        Http().ListAsync<T>(firstPath, context.Token, ct);
 
     private static int LastSegmentNumber(string? url) =>
         url is not null && int.TryParse(url.TrimEnd('/').Split('/')[^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)
