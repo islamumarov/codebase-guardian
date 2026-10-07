@@ -1,3 +1,4 @@
+using CodebaseGuardian.Sources;
 using Microsoft.Extensions.Options;
 
 namespace CodebaseGuardian.Hosting;
@@ -16,7 +17,10 @@ public sealed class GuardianOptions
 {
     public const string SectionName = "Guardian";
 
-    /// <summary>The Git repository to watch. Normalized to a full path after binding.</summary>
+    /// <summary>
+    /// The repository to watch: a local Git working tree (normalized to a full path after binding) or a GitHub repository
+    /// (<c>github:owner/name</c> or a github.com URL), which is read through the GitHub API only.
+    /// </summary>
     public string RepositoryPath { get; set; } = Directory.GetCurrentDirectory();
 
     public GuardianTransport Transport { get; set; } = GuardianTransport.Stdio;
@@ -58,13 +62,25 @@ internal sealed class GuardianOptionsValidator : IValidateOptions<GuardianOption
 
         var failures = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(options.RepositoryPath))
+        switch (RepositoryLocation.Parse(options.RepositoryPath))
         {
-            failures.Add($"{Key(nameof(GuardianOptions.RepositoryPath))} must not be empty.");
-        }
-        else if (!Directory.Exists(options.RepositoryPath))
-        {
-            failures.Add($"{Key(nameof(GuardianOptions.RepositoryPath))} '{options.RepositoryPath}' does not exist or is not a directory.");
+            case RepositoryLocation.Invalid invalid:
+                failures.Add(invalid.Reason);
+                break;
+            case RepositoryLocation.GitHub when options.AutoChecks:
+                failures.Add($"{Key(nameof(GuardianOptions.AutoChecks))} needs a local checkout; it is not available in remote mode.");
+                break;
+            case RepositoryLocation.Local:
+                if (string.IsNullOrWhiteSpace(options.RepositoryPath))
+                {
+                    failures.Add($"{Key(nameof(GuardianOptions.RepositoryPath))} must not be empty.");
+                }
+                else if (!Directory.Exists(options.RepositoryPath))
+                {
+                    failures.Add($"{Key(nameof(GuardianOptions.RepositoryPath))} '{options.RepositoryPath}' does not exist or is not a directory.");
+                }
+
+                break;
         }
 
         if (options.WatchIntervalMs < MinimumWatchIntervalMs)

@@ -12,6 +12,7 @@ using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
 using CodebaseGuardian.Scanning;
 using CodebaseGuardian.Security;
+using CodebaseGuardian.Sources;
 using CodebaseGuardian.Tools;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
@@ -40,10 +41,17 @@ public static class GuardianServiceCollectionExtensions
 
         // ValidateOnStart makes an invalid configuration fail the host start itself, also for transports that only
         // build the MCP server later (per request over HTTP), instead of failing on the first client request.
+        services.AddSingleton(RepositoryLocation.FromConfiguration(configuration));
         services.AddSingleton<IValidateOptions<GuardianOptions>, GuardianOptionsValidator>();
         services.AddOptions<GuardianOptions>()
             .Bind(configuration.GetSection(GuardianOptions.SectionName))
-            .PostConfigure(options => options.RepositoryPath = ToFullPath(options.RepositoryPath))
+            .PostConfigure(options => options.RepositoryPath =
+                RepositoryLocation.Parse(options.RepositoryPath) is RepositoryLocation.Local local ? local.FullPath : options.RepositoryPath)
+            .ValidateOnStart();
+
+        services.AddSingleton<IValidateOptions<RemoteOptions>, RemoteOptionsValidator>();
+        services.AddOptions<RemoteOptions>()
+            .Bind(configuration.GetSection(RemoteOptions.SectionName))
             .ValidateOnStart();
 
         services.AddSingleton<IValidateOptions<HttpAuthOptions>, HttpAuthOptionsValidator>();
@@ -191,9 +199,6 @@ public static class GuardianServiceCollectionExtensions
         var configured = configuration[$"{GuardianOptions.SectionName}:{nameof(GuardianOptions.SkillsDirectory)}"];
         return string.IsNullOrWhiteSpace(configured) ? null : Path.GetFullPath(configured);
     }
-
-    // Empty values are left for validation to report; GetFullPath would throw for them.
-    private static string ToFullPath(string path) => string.IsNullOrWhiteSpace(path) ? path : Path.GetFullPath(path);
 
     private static string ResolveServerVersion()
     {
