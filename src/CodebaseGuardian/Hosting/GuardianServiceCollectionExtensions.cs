@@ -129,7 +129,7 @@ public static class GuardianServiceCollectionExtensions
             .WithResources<ScanResources>();
     }
 
-    /// <summary>Binds <see cref="GitHubOptions"/> and registers the GitHub token provider, repository resolver and REST client.</summary>
+    /// <summary>Binds <see cref="GitHubOptions"/> and registers the GitHub token provider, repository resolver, REST client and read-only repository API.</summary>
     internal static IServiceCollection AddGitHubIntegration(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<IValidateOptions<GitHubOptions>, GitHubOptionsValidator>();
@@ -140,6 +140,7 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<IGitHubTokenProvider, GitHubTokenProvider>();
         services.AddSingleton<IGitHubRepositoryResolver, GitHubRepositoryResolver>();
         services.AddHttpClient<IGitHubClient, GitHubClient>(GitHubClient.HttpClientName);
+        services.AddSingleton<IGitHubRepositoryApi, GitHubRepositoryApi>();
 
         // The poller is a singleton whenever GitHub is enabled (tests drive it directly); it runs as a hosted
         // service only when polling is enabled too.
