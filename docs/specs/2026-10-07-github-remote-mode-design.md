@@ -205,7 +205,7 @@ Empty repository: GitHub answers `409` for commits/compare. `ListCommitsAsync` r
   - `patch` missing with non-zero counts (diff too large for the API) → counts kept, `PatchTruncated = true`.
   - Compare returns at most 300 files: exactly 300 → `PatchTruncated = true`.
   - Patch longer than `maxPatchBytes` is cut as local mode does.
-  - `From`/`To` in the returned `DiffSummary` are the resolved SHAs.
+  - `From`/`To` in the returned `DiffSummary`: commit diff → parent SHA (or the empty-tree marker local mode uses for root commits) and the commit SHA; compare → `base_commit.sha` and the last compare commit's SHA, or the `to` argument when the comparison has no commits (`identical`/`behind`).
 - `ReadFileAsync` / `ReadSnapshotAsync`: §4.4, always at the default-branch head SHA resolved at call start (one consistent SHA per snapshot).
 
 ### 4.4 Snapshot through the tarball
