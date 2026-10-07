@@ -66,6 +66,35 @@ public class GitHubToolsTests
 
     private static int Posts(FakeGitHubApi api) => api.Requests.Count(r => r.Method == HttpMethod.Post);
 
+    private static Dictionary<string, object?> ArgumentsFor(string tool) => tool switch
+    {
+        "create_issue" => Issue(),
+        "comment_on_pr" => new() { ["number"] = 12, ["body"] = "Looks good" },
+        "open_pull_request" => new() { ["head"] = "feature", ["title"] = "Add it", ["body"] = "b" },
+        _ => throw new ArgumentOutOfRangeException(nameof(tool), tool, null),
+    };
+
+    [Theory]
+    [InlineData("create_issue")]
+    [InlineData("comment_on_pr")]
+    [InlineData("open_pull_request")]
+    public async Task The_output_schema_describes_both_the_created_and_the_declined_result(string tool)
+    {
+        using var repo = Repo();
+        await using var accepting = await StartAsync(repo, Api(), Elicit("accept", []));
+        await using var declining = await StartAsync(repo, Api(), Elicit("decline", []));
+        var schema = Assert.Single(await accepting.Client.ListToolsAsync(cancellationToken: Ct), t => t.Name == tool).ProtocolTool.OutputSchema!.Value;
+
+        var created = (await accepting.Client.CallToolAsync(tool, ArgumentsFor(tool), cancellationToken: Ct)).StructuredContent!.Value;
+        var declined = (await declining.Client.CallToolAsync(tool, ArgumentsFor(tool), cancellationToken: Ct)).StructuredContent!.Value;
+
+        Assert.Equal(
+            created.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal),
+            schema.GetProperty("properties").EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal));
+        SchemaAssert.Conforms(schema, created);
+        SchemaAssert.Conforms(schema, declined);
+    }
+
     [Fact]
     public async Task Accepted_prompt_creates_the_issue()
     {

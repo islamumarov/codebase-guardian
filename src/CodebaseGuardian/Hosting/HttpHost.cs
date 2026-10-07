@@ -17,10 +17,12 @@ public sealed class HttpBindingException(string message) : InvalidOperationExcep
 /// <summary>Serves the server over stateless Streamable HTTP.</summary>
 public static class HttpHost
 {
+    private const string McpPath = "/mcp";
+
     /// <summary>
     /// Builds (does not run) the web app: Kestrel on <see cref="GuardianOptions.HttpUrl"/>, the Guardian MCP server on
-    /// <c>/mcp</c> in stateless mode, and <c>GET /healthz</c>. The options always describe the running transport, so
-    /// <see cref="GuardianOptions.Transport"/> is forced to <see cref="GuardianTransport.Http"/>.
+    /// <c>/mcp</c> in stateless mode, and <c>GET /healthz</c>. Once started, it logs the MCP endpoint. The options always
+    /// describe the running transport, so <see cref="GuardianOptions.Transport"/> is forced to <see cref="GuardianTransport.Http"/>.
     /// </summary>
     /// <param name="args">The raw command line; it is normalized here, exactly once.</param>
     /// <exception cref="HttpBindingException">The URL is empty, or may bind a non-loopback address without both
@@ -69,17 +71,18 @@ public static class HttpHost
         configureServices?.Invoke(builder.Services);
 
         var app = builder.Build();
+        app.Lifetime.ApplicationStarted.Register(() => LogEndpoints(app));
         app.Use((context, next) => RejectRebinding(context, next, guardian.HttpAllowRemote));
 
         if (authenticated)
         {
             app.UseAuthentication();
             app.UseAuthorization();
-            app.MapMcp("/mcp").RequireAuthorization();
+            app.MapMcp(McpPath).RequireAuthorization();
         }
         else
         {
-            app.MapMcp("/mcp");
+            app.MapMcp(McpPath);
         }
 
         app.MapGet("/healthz", () => Results.Text("ok"));
@@ -116,6 +119,16 @@ public static class HttpHost
         {
             Console.Error.WriteLine($"codebase-guardian: invalid configuration.{Environment.NewLine}{exception.Message}");
             return 2;
+        }
+    }
+
+    // Kestrel logs only the address it listens on, which is easy to mistake for the endpoint (the root answers 404).
+    private static void LogEndpoints(WebApplication app)
+    {
+        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(HttpHost));
+        foreach (var address in app.Urls)
+        {
+            logger.LogInformation("MCP endpoint: {Endpoint}", address.TrimEnd('/') + McpPath);
         }
     }
 

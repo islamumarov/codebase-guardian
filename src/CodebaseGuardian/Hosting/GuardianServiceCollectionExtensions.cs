@@ -7,6 +7,7 @@ using CodebaseGuardian.Checks;
 using CodebaseGuardian.Dependencies;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.GitHub;
+using CodebaseGuardian.Json;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
 using CodebaseGuardian.Scanning;
@@ -106,13 +107,13 @@ public static class GuardianServiceCollectionExtensions
             .WithTasks(
                 new InMemoryMcpTaskStore { DefaultPollIntervalMs = 1000, DefaultTimeToLive = TimeSpan.FromHours(1) },
                 options => options.ExecutionModeSelector = GuardianTaskModes.Select)
-            .WithTools<RepositoryTools>()
-            .WithTools<EventTools>()
-            .WithTools<CheckTools>()
-            .WithTools<SecurityTools>()
-            .WithTools<DependencyTools>()
-            .WithTools<GitHubTools>()
-            .WithTools<ScanTools>()
+            .WithGuardianTools<RepositoryTools>()
+            .WithGuardianTools<EventTools>()
+            .WithGuardianTools<CheckTools>()
+            .WithGuardianTools<SecurityTools>()
+            .WithGuardianTools<DependencyTools>()
+            .WithGuardianTools<GitHubTools>()
+            .WithGuardianTools<ScanTools>()
             .WithResources<RepositoryResources>()
             .WithResources<CheckResources>()
             .WithResources<ScanResources>();
@@ -144,6 +145,34 @@ public static class GuardianServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// The SDK's <c>WithTools&lt;T&gt;</c> (2.2.0) plus <see cref="GuardianJsonSchema.CreateOptions"/>, which that overload
+    /// cannot pass: without them a value written by a custom converter (a timestamp) is advertised as any value.
+    /// </summary>
+    private static IMcpServerBuilder WithGuardianTools<TToolType>(this IMcpServerBuilder builder)
+    {
+        foreach (var method in typeof(TToolType).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+        {
+            if (method.GetCustomAttribute<McpServerToolAttribute>() is null)
+            {
+                continue;
+            }
+
+            builder.Services.AddSingleton(services => method.IsStatic
+                ? McpServerTool.Create(method, options: ToolOptions(services))
+                : McpServerTool.Create(method, static request => CreateTarget(request.Services, typeof(TToolType)), ToolOptions(services)));
+        }
+
+        return builder;
+    }
+
+    private static McpServerToolCreateOptions ToolOptions(IServiceProvider services) =>
+        new() { Services = services, SchemaCreateOptions = GuardianJsonSchema.CreateOptions };
+
+    // As in the SDK: a new instance per invocation, with its constructor dependencies from the request's services.
+    private static object CreateTarget(IServiceProvider? services, Type type) =>
+        services is not null ? ActivatorUtilities.CreateInstance(services, type) : Activator.CreateInstance(type)!;
 
     /// <summary>Webhooks are offered on authenticated HTTP only (ruling R5); stdio never offers them.</summary>
     private static bool WebhooksEnabled(IConfiguration configuration)
