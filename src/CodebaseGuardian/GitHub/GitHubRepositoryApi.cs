@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -25,7 +26,7 @@ public sealed partial class GitHubRepositoryApi(
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly GitHubConditionalCache _cache = new();
     private readonly object _gate = new();
-    private IReadOnlyDictionary<string, string>? _lastBranches;
+    private (string Page1Body, IReadOnlyDictionary<string, string> Heads)? _lastBranches;
 
     public async Task<GitHubRepositoryInfo> GetRepositoryAsync(CancellationToken ct)
     {
@@ -52,21 +53,23 @@ public sealed partial class GitHubRepositoryApi(
 
         if (first.Status == HttpStatusCode.Conflict)
         {
-            return Remember(new Dictionary<string, string>());
+            return new Dictionary<string, string>().AsReadOnly();
         }
 
         if (first.NotModified)
         {
+            // A 304 only proves page 1 is unchanged. The stored map is reused only when it was built from exactly that page 1
+            // (a call that cached a newer page 1 but failed on a later page must not leave its predecessor's map answering).
             lock (_gate)
             {
-                if (_lastBranches is not null)
+                if (_lastBranches is { } last && last.Page1Body == first.Body)
                 {
-                    return _lastBranches;
+                    return last.Heads;
                 }
             }
 
-            // The cache holds the page but no complete listing was ever parsed (an earlier call failed part-way): fetch again, unconditionally.
-            first = await session.Http.GetConditionalAsync(path, session.Token, new GitHubConditionalCache(), ct);
+            _cache.Remove(path);
+            first = await session.Http.GetConditionalAsync(path, session.Token, _cache, ct);
         }
 
         var heads = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -84,13 +87,20 @@ public sealed partial class GitHubRepositoryApi(
             logger.LogWarning("Only the first 500 branches are watched.");
         }
 
-        return Remember(heads);
+        var result = heads.AsReadOnly();
+        lock (_gate)
+        {
+            _lastBranches = (first.Body, result);
+        }
+
+        return result;
     }
 
     public async Task<IReadOnlyList<GitHubCommit>> ListCommitsAsync(string? sha, int limit, CancellationToken ct)
     {
+        var escapedSha = sha is null ? null : EscapeRef(sha, "ref");
         var session = await PrepareAsync(ct);
-        var path = session.Path("commits") + $"?per_page={Math.Clamp(limit, 1, 100)}" + (sha is null ? string.Empty : "&sha=" + EscapeRef(sha));
+        var path = session.Path("commits") + $"?per_page={Math.Clamp(limit, 1, 100)}" + (escapedSha is null ? string.Empty : "&sha=" + escapedSha);
         using var response = await session.Http.SendAsync(
             HttpMethod.Get, path, null, session.Token, ct,
             allow: [HttpStatusCode.Conflict, HttpStatusCode.NotFound, HttpStatusCode.UnprocessableEntity]);
@@ -112,21 +122,41 @@ public sealed partial class GitHubRepositoryApi(
 
     public async Task<GitHubCommitDetail> GetCommitAsync(string sha, CancellationToken ct)
     {
+        var escaped = EscapeRef(sha, "ref");
         var session = await PrepareAsync(ct);
         // Each page is a full commit object whose "files" holds that page's files; the commit itself comes from page 1.
-        var pages = await session.Http.ListAsync<CommitDto>(
-            session.Path("commits", EscapeRef(sha)), session.Token, ct, GitHubHttp.MaxPages,
-            HttpStatusCode.NotFound, HttpStatusCode.UnprocessableEntity);
-        if (pages.Count == 0)
+        using var firstResponse = await session.Http.SendAsync(
+            HttpMethod.Get, session.Path("commits", escaped), null, session.Token, ct,
+            allow: [HttpStatusCode.NotFound, HttpStatusCode.UnprocessableEntity]);
+        if (!firstResponse.IsSuccessStatusCode)
         {
             throw new GitHubRevisionNotFoundException(sha, session.Repository);
         }
 
-        return new GitHubCommitDetail(ToCommit(pages[0]), [.. pages.SelectMany(page => page.Files ?? []).Select(ToFileChange)]);
+        var first = Parse<CommitDto>(await firstResponse.Content.ReadAsStringAsync(ct));
+        var files = new List<FileDto>(first.Files ?? []);
+        var next = session.Http.NextLink(firstResponse);
+        for (var page = 2; next is not null && page <= GitHubHttp.MaxPages; page++)
+        {
+            // A failure on a later page is an error, not a missing revision.
+            using var response = await session.Http.SendAsync(HttpMethod.Get, next, null, session.Token, ct);
+            files.AddRange(Parse<CommitDto>(await response.Content.ReadAsStringAsync(ct)).Files ?? []);
+            next = session.Http.NextLink(response);
+        }
+
+        var truncated = next is not null;
+        if (truncated)
+        {
+            logger.LogWarning("Only the first {Count} files of commit {Sha} are listed.", files.Count, sha);
+        }
+
+        return new GitHubCommitDetail(ToCommit(first), [.. files.Select(ToFileChange)], truncated);
     }
 
     public async Task<GitHubComparison> CompareAsync(string @base, string head, CancellationToken ct)
     {
+        RequireSafeSegments(@base, "ref");
+        RequireSafeSegments(head, "ref");
         var session = await PrepareAsync(ct);
         var path = session.Path("compare", $"{Uri.EscapeDataString(@base)}...{Uri.EscapeDataString(head)}");
         using var response = await session.Http.SendAsync(HttpMethod.Get, path, null, session.Token, ct, allow: HttpStatusCode.NotFound);
@@ -137,16 +167,17 @@ public sealed partial class GitHubRepositoryApi(
 
         var dto = Parse<CompareDto>(await response.Content.ReadAsStringAsync(ct));
         return new GitHubComparison(
-            dto.Status, dto.AheadBy, dto.BehindBy, dto.BaseCommit?.Sha ?? string.Empty,
+            dto.Status, dto.AheadBy, dto.BehindBy, dto.BaseCommit?.Sha ?? string.Empty, dto.MergeBaseCommit?.Sha ?? string.Empty,
             [.. (dto.Commits ?? []).Select(ToCommit)], [.. (dto.Files ?? []).Select(ToFileChange)]);
     }
 
     public async Task<byte[]?> GetFileAsync(string path, string @ref, CancellationToken ct)
     {
+        var escapedPath = EscapeRef(path, "path");
+        var escapedRef = EscapeRef(@ref, "ref");
         var session = await PrepareAsync(ct);
-        var escapedPath = EscapeRef(path);
         using var response = await session.Http.SendAsync(
-            HttpMethod.Get, session.Path("contents", escapedPath) + "?ref=" + EscapeRef(@ref), null, session.Token, ct,
+            HttpMethod.Get, session.Path("contents", escapedPath) + "?ref=" + escapedRef, null, session.Token, ct,
             accept: RawMediaType, allow: HttpStatusCode.NotFound);
         return response.StatusCode == HttpStatusCode.NotFound ? null : await response.Content.ReadAsByteArrayAsync(ct);
     }
@@ -178,17 +209,20 @@ public sealed partial class GitHubRepositoryApi(
         return new Session(new GitHubHttp(httpClients.CreateClient(GitHubClient.HttpClientName), settings, _time), repository, token);
     }
 
-    private IReadOnlyDictionary<string, string> Remember(IReadOnlyDictionary<string, string> heads)
+    /// <summary>Escapes each <c>/</c>-separated segment; empty, "." and ".." segments could re-route the request to another API path (and the token with it).</summary>
+    private static string EscapeRef(string value, string name)
     {
-        lock (_gate)
-        {
-            _lastBranches = heads;
-        }
-
-        return heads;
+        RequireSafeSegments(value, name);
+        return string.Join('/', value.Split('/').Select(Uri.EscapeDataString));
     }
 
-    private static string EscapeRef(string value) => string.Join('/', value.Split('/').Select(Uri.EscapeDataString));
+    private static void RequireSafeSegments(string value, string name)
+    {
+        if (value.Split('/').Any(segment => segment is "" or "." or ".."))
+        {
+            throw new ArgumentException($"'{value}' is not a valid {name}.", name);
+        }
+    }
 
     private static T Parse<T>(string json) =>
         JsonSerializer.Deserialize<T>(json, GitHubHttp.Json) ?? throw new GitHubApiException(200, "GitHub returned an empty response.");
@@ -229,5 +263,5 @@ public sealed partial class GitHubRepositoryApi(
     private sealed record CommitDto(string Sha, CommitCoreDto Commit, List<ShaDto>? Parents, List<FileDto>? Files);
 
     private sealed record CompareDto(
-        string Status, int AheadBy, int BehindBy, ShaDto? BaseCommit, List<CommitDto>? Commits, List<FileDto>? Files);
+        string Status, int AheadBy, int BehindBy, ShaDto? BaseCommit, ShaDto? MergeBaseCommit, List<CommitDto>? Commits, List<FileDto>? Files);
 }

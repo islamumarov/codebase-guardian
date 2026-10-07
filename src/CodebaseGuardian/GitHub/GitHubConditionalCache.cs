@@ -21,4 +21,13 @@ internal sealed class GitHubConditionalCache
             _entries[path] = (etag, body, nextLink);
         }
     }
+
+    /// <summary>Forgets the entry so the next conditional GET of the path is unconditional.</summary>
+    public void Remove(string path)
+    {
+        lock (_gate)
+        {
+            _entries.Remove(path);
+        }
+    }
 }

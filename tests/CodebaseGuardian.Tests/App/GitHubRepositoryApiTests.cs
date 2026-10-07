@@ -341,6 +341,7 @@ public class GitHubRepositoryApiTests
 
         var detail = await Create(api).GetCommitAsync("abc123", Ct);
 
+        Assert.False(detail.FilesTruncated);
         Assert.Equal("page one", detail.Commit.Message);
         Assert.Equal(["p1"], detail.Commit.ParentShas);
         Assert.Equal(
@@ -363,13 +364,139 @@ public class GitHubRepositoryApiTests
         Assert.Equal("deadbeef", exception.Revision);
     }
 
+    [Fact]
+    public async Task Commit_file_pages_stop_at_five_and_say_so()
+    {
+        var logs = new CapturingLoggerProvider();
+        var api = new FakeGitHubApi().Map(HttpMethod.Get, "/repos/acme/widgets/commits/abc123", (request, _) =>
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var page = int.TryParse(query["page"], out var parsed) ? parsed : 1;
+            return Json(
+                HttpStatusCode.OK,
+                CommitJson("abc123").TrimEnd('}') + $",\"files\":[{{\"filename\":\"f{page}.cs\",\"status\":\"added\",\"additions\":1,\"deletions\":0}}]}}",
+                ("Link", Next($"https://api.github.com/repos/acme/widgets/commits/abc123?page={page + 1}")));
+        });
+
+        var detail = await Create(api, logs: logs).GetCommitAsync("abc123", Ct);
+
+        Assert.True(detail.FilesTruncated);
+        Assert.Equal(["f1.cs", "f2.cs", "f3.cs", "f4.cs", "f5.cs"], detail.Files.Select(f => f.Path));
+        Assert.Equal(5, api.Requests.Count);
+        Assert.Contains(logs.Messages, message => message.Contains("abc123", StringComparison.Ordinal) && message.Contains("files", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(404)]
+    [InlineData(422)]
+    public async Task A_failing_later_file_page_is_an_error_not_a_revision_miss(int status)
+    {
+        var api = new FakeGitHubApi().Map(HttpMethod.Get, "/repos/acme/widgets/commits/abc123", (request, _) =>
+            request.RequestUri!.Query.Contains("page=2", StringComparison.Ordinal)
+                ? Json((HttpStatusCode)status, """{"message":"gone"}""")
+                : Json(HttpStatusCode.OK, CommitJson("abc123").TrimEnd('}') + ",\"files\":[]}",
+                    ("Link", Next("https://api.github.com/repos/acme/widgets/commits/abc123?page=2"))));
+
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => Create(api).GetCommitAsync("abc123", Ct));
+
+        Assert.Equal(status, exception.StatusCode);
+    }
+
+    // ---- branch cache consistency ---------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task A_page_one_change_followed_by_a_failing_page_two_never_resurrects_the_old_map()
+    {
+        var phase = 1;
+        var api = new FakeGitHubApi().Map(HttpMethod.Get, "/repos/acme/widgets/branches", (request, _) =>
+        {
+            if (request.RequestUri!.Query.Contains("page=2", StringComparison.Ordinal))
+            {
+                return phase == 2
+                    ? Json(HttpStatusCode.InternalServerError, """{"message":"boom"}""")
+                    : Json(HttpStatusCode.OK, """[{"name":"b2","commit":{"sha":"s2"}}]""");
+            }
+
+            var (etag, sha) = phase == 1 ? ("\"e1\"", "s1") : ("\"e2\"", "s1new");
+            if (request.Headers.IfNoneMatch.Any(tag => tag.Tag == etag))
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotModified);
+            }
+
+            return Json(HttpStatusCode.OK, $$$"""[{"name":"b1","commit":{"sha":"{{{sha}}}"}}]""",
+                ("ETag", etag), ("Link", Next("https://api.github.com/repos/acme/widgets/branches?per_page=100&page=2")));
+        });
+        var client = Create(api);
+
+        var first = await client.GetBranchHeadsAsync(Ct);
+        phase = 2;
+        await Assert.ThrowsAsync<GitHubApiException>(() => client.GetBranchHeadsAsync(Ct));
+        phase = 3;
+        var third = await client.GetBranchHeadsAsync(Ct);
+        var fourth = await client.GetBranchHeadsAsync(Ct);
+
+        Assert.Equal(new Dictionary<string, string> { ["b1"] = "s1", ["b2"] = "s2" }, first);
+        Assert.Equal(new Dictionary<string, string> { ["b1"] = "s1new", ["b2"] = "s2" }, third);
+        Assert.Equal(third, fourth);
+        Assert.Equal(8, api.Requests.Count); // 2 + 2 (page 2 fails) + 3 (304, refetch, page 2) + 1 (304 hit)
+    }
+
+    [Fact]
+    public async Task The_returned_branch_map_cannot_be_used_to_corrupt_the_cache()
+    {
+        var api = new FakeGitHubApi();
+        _ = new FakeGitHubRepository(api).Commit("A", "first", []).SetBranch("main", "A");
+        var client = Create(api);
+
+        var heads = await client.GetBranchHeadsAsync(Ct);
+
+        Assert.Throws<NotSupportedException>(() => ((IDictionary<string, string>)heads)["evil"] = "x");
+        Assert.Equal(heads, await client.GetBranchHeadsAsync(Ct));
+    }
+
+    // ---- unsafe revisions and paths -------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Refs_and_paths_with_dot_or_empty_segments_are_rejected_before_any_request()
+    {
+        var api = new FakeGitHubApi();
+        var client = Create(api);
+        Func<Task>[] calls =
+        [
+            () => client.GetCommitAsync("../../user", Ct),
+            () => client.GetCommitAsync("", Ct),
+            () => client.CompareAsync("main", "a/../b", Ct),
+            () => client.CompareAsync("..", "main", Ct),
+            () => client.ListCommitsAsync("x/./y", 10, Ct),
+            () => client.GetFileAsync("docs/../../secrets", "main", Ct),
+            () => client.GetFileAsync("a//b", "main", Ct),
+            () => client.GetFileAsync("/a", "main", Ct),
+            () => client.GetFileAsync("a.txt", "../main", Ct),
+        ];
+
+        foreach (var call in calls)
+        {
+            await Assert.ThrowsAsync<ArgumentException>(call);
+        }
+
+        Assert.Empty(api.Requests);
+    }
+
+    [Fact]
+    public async Task The_rejection_message_names_the_offending_value()
+    {
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() => Create(new FakeGitHubApi()).GetCommitAsync("../x", Ct));
+
+        Assert.Contains("'../x' is not a valid ref.", exception.Message, StringComparison.Ordinal);
+    }
+
     // ---- compare --------------------------------------------------------------------------------------------------
 
     [Fact]
     public async Task Compare_escapes_each_side_and_parses_the_result()
     {
         var api = new FakeGitHubApi().MapJson(HttpMethod.Get, "/repos/acme/widgets/compare/main...feature/x", 200, $$$"""
-            {"status":"diverged","ahead_by":2,"behind_by":1,"base_commit":{"sha":"mb"},
+            {"status":"diverged","ahead_by":2,"behind_by":1,"base_commit":{"sha":"tip"},"merge_base_commit":{"sha":"mb"},
              "commits":[{{{CommitJson("c1")}}},{{{CommitJson("c2", "c1")}}}],
              "files":[{"filename":"a.cs","status":"added","additions":3,"deletions":0,"patch":"+x"}]}
             """);
@@ -380,7 +507,8 @@ public class GitHubRepositoryApiTests
         Assert.Equal("diverged", comparison.Status);
         Assert.Equal(2, comparison.AheadBy);
         Assert.Equal(1, comparison.BehindBy);
-        Assert.Equal("mb", comparison.BaseSha);
+        Assert.Equal("tip", comparison.BaseSha);
+        Assert.Equal("mb", comparison.MergeBaseSha);
         Assert.Equal(["c1", "c2"], comparison.Commits.Select(c => c.Sha));
         Assert.Equal([new GitHubFileChange("a.cs", null, "added", 3, 0, "+x")], comparison.Files);
     }
@@ -413,7 +541,8 @@ public class GitHubRepositoryApiTests
         Assert.Equal(["A"], detail.Commit.ParentShas);
         Assert.Equal("b.txt", Assert.Single(detail.Files).Path);
         Assert.Equal("diverged", comparison.Status);
-        Assert.Equal("A", comparison.BaseSha);
+        Assert.Equal("B", comparison.BaseSha);
+        Assert.Equal("A", comparison.MergeBaseSha);
         Assert.Equal(["B", "A"], listed.Select(c => c.Sha));
     }
 

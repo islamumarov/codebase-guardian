@@ -208,7 +208,8 @@ public sealed class FakeGitHubRepository
                 status,
                 ahead_by = ahead.Count,
                 behind_by = behind,
-                base_commit = new { sha = MergeBase(baseAncestors, headAncestors)?.Sha ?? baseNode.Sha },
+                base_commit = new { sha = baseNode.Sha },
+                merge_base_commit = new { sha = MergeBase(baseAncestors, headAncestors)?.Sha ?? baseNode.Sha },
                 commits = ahead.Select(node => CommitJson(node, withFiles: false)),
                 files = files.Values.Select(FileJson),
             });

@@ -69,6 +69,7 @@ public class FakeGitHubRepositoryTests
         Assert.Equal(2, json.GetProperty("ahead_by").GetInt32());
         Assert.Equal(0, json.GetProperty("behind_by").GetInt32());
         Assert.Equal("A", json.GetProperty("base_commit").GetProperty("sha").GetString());
+        Assert.Equal("A", json.GetProperty("merge_base_commit").GetProperty("sha").GetString());
         Assert.Equal(["B", "C"], json.GetProperty("commits").EnumerateArray().Select(c => c.GetProperty("sha").GetString()));
         Assert.Equal(["a.txt", "b.txt"], json.GetProperty("files").EnumerateArray().Select(f => f.GetProperty("filename").GetString()).Order());
     }
@@ -102,7 +103,8 @@ public class FakeGitHubRepositoryTests
         Assert.Equal("diverged", json.GetProperty("status").GetString());
         Assert.Equal(1, json.GetProperty("ahead_by").GetInt32());
         Assert.Equal(1, json.GetProperty("behind_by").GetInt32());
-        Assert.Equal("B", json.GetProperty("base_commit").GetProperty("sha").GetString());
+        Assert.Equal("C", json.GetProperty("base_commit").GetProperty("sha").GetString()); // the tip of the base ref
+        Assert.Equal("B", json.GetProperty("merge_base_commit").GetProperty("sha").GetString());
         Assert.Equal(["D"], json.GetProperty("commits").EnumerateArray().Select(c => c.GetProperty("sha").GetString()));
         Assert.Equal(["d.txt"], json.GetProperty("files").EnumerateArray().Select(f => f.GetProperty("filename").GetString()));
     }
