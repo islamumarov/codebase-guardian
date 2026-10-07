@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Text.RegularExpressions;
 using CodebaseGuardian.Hosting;
 using CodebaseGuardian.Processes;
@@ -23,8 +22,6 @@ public sealed partial class GitRepository : IGitRepository
     private const char RecordSeparator = '\u001e';
 
     private const string LogFormat = "%H%x1f%h%x1f%an%x1f%ae%x1f%cI%x1f%s%x1f%P%x1e";
-
-    private static readonly UTF8Encoding Utf8 = new(false);
 
     private static readonly IReadOnlyDictionary<string, string> GitEnvironment =
         new Dictionary<string, string> { ["GIT_TERMINAL_PROMPT"] = "0" };
@@ -406,19 +403,8 @@ public sealed partial class GitRepository : IGitRepository
 
     private static (string Patch, bool Truncated) CapPatch(ProcessResult patch, int maxBytes)
     {
-        var bytes = Utf8.GetBytes(patch.StandardOutput);
-        if (bytes.Length <= maxBytes)
-        {
-            return (patch.StandardOutput, patch.OutputTruncated);
-        }
-
-        var cut = maxBytes;
-        while (cut > 0 && (bytes[cut] & 0xC0) == 0x80)
-        {
-            cut--; // do not split a multi-byte character
-        }
-
-        return (Utf8.GetString(bytes, 0, cut), true);
+        var (text, cut) = PatchCap.Apply(patch.StandardOutput, maxBytes);
+        return (text, cut || patch.OutputTruncated);
     }
 
     // ---- files and remotes

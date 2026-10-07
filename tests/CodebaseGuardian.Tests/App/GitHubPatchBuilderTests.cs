@@ -100,7 +100,7 @@ public class GitHubPatchBuilderTests
     }
 
     [Fact]
-    public void A_patch_over_the_byte_cap_is_cut_at_the_last_complete_line()
+    public void A_patch_over_the_byte_cap_is_cut_at_the_limit_like_local_mode()
     {
         const string first = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1,2 @@\n+café\n+crème\n";
         var files = new[]
@@ -109,11 +109,23 @@ public class GitHubPatchBuilderTests
             File("b.txt", "added", 1, 0, "@@ -0,0 +1 @@\n+b"),
         };
 
-        // The limit counts UTF-8 bytes (é and è are two each) and ends inside the next "diff --git" line.
+        // The limit counts UTF-8 bytes (é and è are two each) and ends inside the next "diff --git" line: cut mid-line there.
         var summary = Build(files, maxPatchBytes: Encoding.UTF8.GetByteCount(first) + 5);
 
-        AssertSummary(summary, [new FileDiffStat("a.txt", 2, 0, false), new FileDiffStat("b.txt", 1, 0, false)], 3, 0, first, truncated: true);
+        AssertSummary(summary, [new FileDiffStat("a.txt", 2, 0, false), new FileDiffStat("b.txt", 1, 0, false)], 3, 0, first + "diff ", truncated: true);
         Assert.Equal([new AddedLine("a.txt", 1, "café"), new AddedLine("a.txt", 2, "crème")], PatchParser.AddedLines(summary.Patch));
+    }
+
+    [Fact]
+    public void A_byte_cap_inside_a_multibyte_character_cuts_before_it()
+    {
+        const string head = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+caf";
+
+        // One byte into the two-byte é: the cut backs off to the character boundary, as GitRepository.CapPatch does.
+        var summary = Build([File("a.txt", "modified", 1, 0, "@@ -0,0 +1 @@\n+café")], maxPatchBytes: Encoding.UTF8.GetByteCount(head) + 1);
+
+        AssertSummary(summary, [new FileDiffStat("a.txt", 1, 0, false)], 1, 0, head, truncated: true);
+        Assert.Equal([new AddedLine("a.txt", 1, "caf")], PatchParser.AddedLines(summary.Patch));
     }
 
     [Fact]
@@ -128,11 +140,31 @@ public class GitHubPatchBuilderTests
     }
 
     [Fact]
-    public void A_zero_byte_cap_returns_the_stats_with_an_empty_patch()
+    public void A_zero_byte_cap_returns_the_stats_with_an_empty_truncated_patch()
     {
         var summary = Build([File("a.txt", "modified", 1, 2, "@@ -1,2 +1 @@\n-a\n-b\n+c")], maxPatchBytes: 0);
 
-        AssertSummary(summary, [new FileDiffStat("a.txt", 1, 2, false)], 1, 2, string.Empty, truncated: false);
+        AssertSummary(summary, [new FileDiffStat("a.txt", 1, 2, false)], 1, 2, string.Empty, truncated: true);
+        Assert.Empty(PatchParser.AddedLines(summary.Patch));
+    }
+
+    [Fact]
+    public void A_zero_byte_cap_on_an_empty_diff_is_not_truncated()
+    {
+        var summary = Build([], maxPatchBytes: 0);
+
+        AssertSummary(summary, [], 0, 0, string.Empty, truncated: false);
+    }
+
+    [Theory]
+    [InlineData("renamed")]
+    [InlineData("copied")]
+    public void A_rename_or_copy_without_content_changes_is_not_binary(string status)
+    {
+        var summary = Build([File("new/name.txt", status, 0, 0, null, previous: "old/name.txt")]);
+
+        AssertSummary(summary, [new FileDiffStat("new/name.txt", 0, 0, false)], 0, 0,
+            "diff --git a/old/name.txt b/new/name.txt\n--- a/old/name.txt\n+++ b/new/name.txt\n", truncated: false);
         Assert.Empty(PatchParser.AddedLines(summary.Patch));
     }
 

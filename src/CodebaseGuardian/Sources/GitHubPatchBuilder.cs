@@ -8,12 +8,11 @@ internal static class GitHubPatchBuilder
 {
     private const string DevNull = "/dev/null";
 
-    private static readonly UTF8Encoding Utf8 = new(false);
-
     /// <summary>
     /// Stitches per-file API patches into one unified diff that <see cref="Security.PatchParser"/> reads; applies the binary/truncation rules:
-    /// no patch and no counts is binary; no patch with counts (GitHub's diff was too large) and a capped file list mark the patch
-    /// truncated; a patch over <paramref name="maxPatchBytes"/> UTF-8 bytes is cut after its last complete line within the limit.
+    /// no patch and no counts is binary (except a pure rename or copy, which is 0/0); no patch with counts (GitHub's diff was too
+    /// large) and a capped file list mark the patch truncated; a patch over <paramref name="maxPatchBytes"/> UTF-8 bytes is cut
+    /// exactly as local mode cuts it (<see cref="PatchCap"/>).
     /// </summary>
     public static DiffSummary Build(string from, string to, IReadOnlyList<GitHubFileChange> files, int maxPatchBytes, bool fileListCapped)
     {
@@ -25,20 +24,22 @@ internal static class GitHubPatchBuilder
         var truncated = fileListCapped;
         foreach (var file in files)
         {
-            var binary = file.Patch is null && file.Additions + file.Deletions == 0;
+            // A rename or copy without content changes has no patch and no counts either, but it is not binary (local numstat says 0/0).
+            var unchanged = file.Patch is null && file.Additions + file.Deletions == 0;
+            var binary = unchanged && file.Status is not ("renamed" or "copied");
             stats.Add(binary
                 ? new FileDiffStat(file.Path, null, null, true)
                 : new FileDiffStat(file.Path, file.Additions, file.Deletions, false));
-            truncated |= file.Patch is null && !binary;
+            truncated |= file.Patch is null && !unchanged;
 
             // Characters never outnumber UTF-8 bytes: past the limit in characters, the rest would be cut anyway.
-            if (maxPatchBytes > 0 && patch.Length <= maxPatchBytes)
+            if (patch.Length <= maxPatchBytes)
             {
                 AppendFile(patch, file);
             }
         }
 
-        var (text, cut) = Cap(patch.ToString(), maxPatchBytes);
+        var (text, cut) = PatchCap.Apply(patch.ToString(), maxPatchBytes);
         return new DiffSummary(
             from,
             to,
@@ -64,25 +65,6 @@ internal static class GitHubPatchBuilder
                 patch.Append('\n');
             }
         }
-    }
-
-    /// <summary>Zero bytes asks for no patch at all, which is not a truncation; otherwise the cut ends after a complete line.</summary>
-    private static (string Patch, bool Truncated) Cap(string patch, int maxBytes)
-    {
-        if (maxBytes == 0)
-        {
-            return (string.Empty, false);
-        }
-
-        var bytes = Utf8.GetBytes(patch);
-        if (bytes.Length <= maxBytes)
-        {
-            return (patch, false);
-        }
-
-        // '\n' is never part of a multi-byte character, so cutting after one keeps the text valid UTF-8.
-        var cut = Array.LastIndexOf(bytes, (byte)'\n', maxBytes - 1) + 1;
-        return (Utf8.GetString(bytes, 0, cut), true);
     }
 
     /// <summary>
