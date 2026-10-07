@@ -43,6 +43,24 @@ public class ToolSchemaTests
         Assert.Equal("date-time", timestamp.GetProperty("format").GetString());
     }
 
+    [Fact]
+    public async Task Scan_secrets_requires_complete_and_warnings()
+    {
+        using var repo = TempGitRepo.Create();
+        await using var server = await GuardianTestHost.StartAsync(repo.Path, cancellationToken: Ct);
+        var schema = Assert.Single(await server.Client.ListToolsAsync(cancellationToken: Ct), t => t.Name == "scan_secrets").ProtocolTool.OutputSchema!.Value;
+
+        var required = schema.GetProperty("required").EnumerateArray().Select(e => e.GetString()).ToList();
+        var properties = schema.GetProperty("properties");
+
+        Assert.Contains("complete", required);
+        Assert.Contains("warnings", required);
+        Assert.Equal("boolean", properties.GetProperty("complete").GetProperty("type").GetString());
+        var warnings = properties.GetProperty("warnings");
+        Assert.Equal("array", warnings.GetProperty("type").GetString());
+        Assert.Equal("string", warnings.GetProperty("items").GetProperty("type").GetString());
+    }
+
     // A value schema of `true` or `{}` accepts anything: clients learn nothing from it, and some reject the tool.
     private static void CollectUndescribed(JsonElement schema, string path, List<string> undescribed)
     {

@@ -31,7 +31,12 @@ public sealed class FullScanService(
 
         progress?.Report("secrets");
         IReadOnlyList<SecretFinding> findings = [];
-        await Step("secrets", async () => findings = await secrets.ScanWorkingTreeAsync(cancellationToken));
+        await Step("secrets", async () =>
+        {
+            var outcome = await secrets.ScanWorkingTreeAsync(cancellationToken);
+            findings = outcome.Findings;
+            errors.AddRange(outcome.Warnings.Select(warning => $"secrets: {warning}"));
+        });
 
         progress?.Report("dependencies");
         DependencyAuditReport? audit = null;

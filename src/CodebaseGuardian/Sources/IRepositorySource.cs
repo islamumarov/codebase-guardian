@@ -53,6 +53,6 @@ public sealed record SnapshotFile(string Path, ReadOnlyMemory<byte>? Content, st
 
 public static class SnapshotLimits
 {
-    /// <summary>Files larger than this are not read into a snapshot; <c>SecretScanner.MaxFileBytes</c> is an alias.</summary>
+    /// <summary>Files larger than this are not read into a snapshot.</summary>
     public const long MaxFileBytes = 1024 * 1024;
 }
