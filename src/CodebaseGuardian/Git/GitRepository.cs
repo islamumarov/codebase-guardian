@@ -499,7 +499,7 @@ public sealed partial class GitRepository : IGitRepository
 
             if (length > SnapshotLimits.MaxFileBytes)
             {
-                yield return new SnapshotFile(path, null, "larger than 1 MB");
+                yield return new SnapshotFile(path, null, SnapshotLimits.TooLargeReason);
                 continue;
             }
 

@@ -55,4 +55,7 @@ public static class SnapshotLimits
 {
     /// <summary>Files larger than this are not read into a snapshot.</summary>
     public const long MaxFileBytes = 1024 * 1024;
+
+    /// <summary>The <see cref="SnapshotFile.Skipped"/> text of a file over <see cref="MaxFileBytes"/>.</summary>
+    public const string TooLargeReason = "larger than 1 MB";
 }

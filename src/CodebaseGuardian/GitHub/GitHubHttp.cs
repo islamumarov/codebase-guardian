@@ -35,6 +35,17 @@ internal sealed partial class GitHubHttp(HttpClient http, GitHubOptions options,
         params HttpStatusCode[] allow) =>
         SendCoreAsync(method, pathOrUrl, body, token, ct, accept, completion, ifNoneMatch: null, allow);
 
+    /// <summary>
+    /// A bare GET of an absolute URL, which may be on another host: a User-Agent and nothing else, no credentials, no error
+    /// mapping. The caller disposes the response.
+    /// </summary>
+    public async Task<HttpResponseMessage> GetWithoutCredentialsAsync(Uri url, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.UserAgent.ParseAdd("codebase-guardian");
+        return await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+    }
+
     public async Task<T> SendJsonAsync<T>(HttpMethod method, string path, object? body, string? token, CancellationToken ct)
     {
         using var response = await SendAsync(method, path, body, token, ct);
@@ -134,8 +145,13 @@ internal sealed partial class GitHubHttp(HttpClient http, GitHubOptions options,
         HttpMethod method, string pathOrUrl, object? body, string? token, CancellationToken ct,
         string? accept, HttpCompletionOption completion, string? ifNoneMatch, HttpStatusCode[] allow)
     {
-        _ = BaseAddress; // make sure relative paths resolve
+        var baseAddress = BaseAddress; // also makes sure relative paths resolve
         using var request = new HttpRequestMessage(method, pathOrUrl);
+        if (token is not null && !IsSameOrigin(baseAddress, request.RequestUri!))
+        {
+            throw new GitHubApiException(502, "Refusing to send the GitHub token to another host.");
+        }
+
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept ?? "application/vnd.github+json"));
         request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
         request.Headers.UserAgent.ParseAdd("codebase-guardian");
@@ -164,6 +180,13 @@ internal sealed partial class GitHubHttp(HttpClient http, GitHubOptions options,
         {
             throw await ToExceptionAsync(response, token, ct);
         }
+    }
+
+    /// <summary>The token may only go to the API's own scheme, host and port; a relative URI resolves against it.</summary>
+    private static bool IsSameOrigin(Uri baseAddress, Uri requestUri)
+    {
+        var resolved = requestUri.IsAbsoluteUri ? requestUri : new Uri(baseAddress, requestUri);
+        return resolved.Scheme == baseAddress.Scheme && resolved.Host == baseAddress.Host && resolved.Port == baseAddress.Port;
     }
 
     private async Task<Exception> ToExceptionAsync(HttpResponseMessage response, string? token, CancellationToken ct)

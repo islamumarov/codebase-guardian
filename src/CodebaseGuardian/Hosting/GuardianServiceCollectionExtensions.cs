@@ -140,6 +140,9 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<IGitHubTokenProvider, GitHubTokenProvider>();
         services.AddSingleton<IGitHubRepositoryResolver, GitHubRepositoryResolver>();
         services.AddHttpClient<IGitHubClient, GitHubClient>(GitHubClient.HttpClientName);
+        // Tarball redirects are followed by hand: the redirect target must be allowlisted and must not receive the token.
+        services.AddHttpClient(GitHubRepositoryApi.ArchiveHttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
         services.AddSingleton<IGitHubRepositoryApi, GitHubRepositoryApi>();
 
         // The poller is a singleton whenever GitHub is enabled (tests drive it directly); it runs as a hosted

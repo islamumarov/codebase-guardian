@@ -182,8 +182,6 @@ public sealed partial class GitHubRepositoryApi(
         return response.StatusCode == HttpStatusCode.NotFound ? null : await response.Content.ReadAsByteArrayAsync(ct);
     }
 
-    public Task<Stream> OpenTarballAsync(string @ref, CancellationToken ct) => throw new NotImplementedException("Task 29");
-
     // ---- plumbing -----------------------------------------------------------------------------------------------
 
     private sealed record Session(GitHubHttp Http, GitHubRepositoryRef Repository, string? Token)
@@ -196,7 +194,7 @@ public sealed partial class GitHubRepositoryApi(
         public override string ToString() => Repository.ToString();
     }
 
-    private async Task<Session> PrepareAsync(CancellationToken ct)
+    private async Task<Session> PrepareAsync(CancellationToken ct, string clientName = GitHubClient.HttpClientName)
     {
         var settings = options.Value;
         if (!settings.Enabled)
@@ -206,7 +204,7 @@ public sealed partial class GitHubRepositoryApi(
 
         var token = await tokens.GetTokenAsync(ct); // optional: null means anonymous
         var repository = await resolver.ResolveAsync(ct) ?? throw new GitHubUnavailableException(NoRepository);
-        return new Session(new GitHubHttp(httpClients.CreateClient(GitHubClient.HttpClientName), settings, _time), repository, token);
+        return new Session(new GitHubHttp(httpClients.CreateClient(clientName), settings, _time), repository, token);
     }
 
     /// <summary>Escapes each <c>/</c>-separated segment; empty, "." and ".." segments could re-route the request to another API path (and the token with it).</summary>

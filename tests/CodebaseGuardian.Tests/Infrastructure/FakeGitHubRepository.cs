@@ -26,6 +26,8 @@ public sealed class FakeGitHubRepository
     private readonly Dictionary<string, Node> _commits = new(StringComparer.Ordinal);
     private readonly SortedDictionary<string, string> _branches = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _files = new(StringComparer.Ordinal);
+    private readonly string _owner;
+    private readonly string _name;
     private int _order;
     private int _branchVersion;
     private int _branchListRequests;
@@ -39,7 +41,11 @@ public sealed class FakeGitHubRepository
             .Map(HttpMethod.Get, root + "/commits", (request, _) => ServeCommits(request))
             .MapPrefix(HttpMethod.Get, root + "/commits/", (request, _) => ServeCommit(request, root + "/commits/"))
             .MapPrefix(HttpMethod.Get, root + "/compare/", (request, _) => ServeCompare(request, root + "/compare/"))
-            .MapPrefix(HttpMethod.Get, root + "/contents/", (request, _) => ServeContents(request, root + "/contents/"));
+            .MapPrefix(HttpMethod.Get, root + "/contents/", (request, _) => ServeContents(request, root + "/contents/"))
+            .MapPrefix(HttpMethod.Get, root + "/tarball/", (request, _) => ServeTarballRedirect(request, root + "/tarball/"))
+            .MapPrefix(HttpMethod.Get, $"/{owner}/{name}/legacy.tar.gz/", (request, _) => ServeCodeload(request, $"/{owner}/{name}/legacy.tar.gz/", $"{owner}-{name}"));
+        _owner = owner;
+        _name = name;
     }
 
     public string DefaultBranch { get; set; }
@@ -103,7 +109,7 @@ public sealed class FakeGitHubRepository
         return this;
     }
 
-    /// <summary>A file served by the contents endpoint at every ref.</summary>
+    /// <summary>A file served by the contents endpoint and by the tarball at every ref.</summary>
     public FakeGitHubRepository File(string path, string content)
     {
         lock (_gate)
@@ -234,6 +240,48 @@ public sealed class FakeGitHubRepository
                     Headers = { ContentType = new MediaTypeHeaderValue("application/vnd.github.raw+json") },
                 },
             };
+    }
+
+    /// <summary>
+    /// 302 to the codeload host, like GitHub. The ref resolves to a commit SHA; a repository with no commit graph at all (a test
+    /// that only declares files) serves the ref itself in the URL.
+    /// </summary>
+    private HttpResponseMessage ServeTarballRedirect(HttpRequestMessage request, string prefix)
+    {
+        var reference = Uri.UnescapeDataString(request.RequestUri!.AbsolutePath)[prefix.Length..];
+        string? sha;
+        lock (_gate)
+        {
+            sha = Resolve(reference)?.Sha ?? (_commits.Count == 0 ? reference : null);
+        }
+
+        if (sha is null)
+        {
+            return NotFound();
+        }
+
+        var response = new HttpResponseMessage(HttpStatusCode.Found);
+        response.Headers.TryAddWithoutValidation(
+            "Location", $"https://codeload.github.com/{_owner}/{_name}/legacy.tar.gz/{Uri.EscapeDataString(sha)}?token=fake");
+        return response;
+    }
+
+    private HttpResponseMessage ServeCodeload(HttpRequestMessage request, string prefix, string rootPrefix)
+    {
+        var sha = Uri.UnescapeDataString(request.RequestUri!.AbsolutePath)[prefix.Length..];
+        (string Path, string Content)[] files;
+        lock (_gate)
+        {
+            files = [.. _files.OrderBy(file => file.Key, StringComparer.Ordinal).Select(file => (file.Key, file.Value))];
+        }
+
+        var archive = TarballBuilder.Build(
+            files.Select(file => (file.Path, System.Formats.Tar.TarEntryType.RegularFile, Encoding.UTF8.GetBytes(file.Content), (string?)null)),
+            root: $"{rootPrefix}-{(sha.Length > 7 ? sha[..7] : sha)}");
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(archive) { Headers = { ContentType = new MediaTypeHeaderValue("application/x-gzip") } },
+        };
     }
 
     // ---- graph (call under _gate) -------------------------------------------------------------------------------

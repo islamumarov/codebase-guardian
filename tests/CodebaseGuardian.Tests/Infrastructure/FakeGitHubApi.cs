@@ -93,7 +93,7 @@ public sealed class FakeGitHubApi : HttpMessageHandler
 
     /// <summary>
     /// Replaces the token provider with one that returns <see cref="Token"/>, pins the repository to acme/widgets, and
-    /// makes this handler the primary handler of the "github" named client.
+    /// makes this handler the primary handler of the "github" and "github-archive" named clients.
     /// </summary>
     public void Install(IServiceCollection services)
     {
@@ -102,6 +102,7 @@ public sealed class FakeGitHubApi : HttpMessageHandler
         services.RemoveAll<IGitHubRepositoryResolver>();
         services.AddSingleton<IGitHubRepositoryResolver>(new FixedResolver());
         services.AddHttpClient(GitHubClient.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => this);
+        services.AddHttpClient(GitHubRepositoryApi.ArchiveHttpClientName).ConfigurePrimaryHttpMessageHandler(() => this);
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

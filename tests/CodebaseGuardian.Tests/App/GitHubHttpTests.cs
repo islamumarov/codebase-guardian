@@ -38,6 +38,36 @@ public class GitHubHttpTests
         Assert.Equal($"Bearer {Secret}", Assert.Single(api.Requests).Headers["Authorization"]);
     }
 
+    [Theory]
+    [InlineData("https://evil.example/steal")]
+    [InlineData("http://api.github.com/repos/a/b")]
+    [InlineData("https://api.github.com:8443/repos/a/b")]
+    [InlineData("https://codeload.github.com/a/b")]
+    public async Task The_token_is_never_sent_to_another_scheme_host_or_port(string url)
+    {
+        var api = new FakeGitHubApi().MapJson(HttpMethod.Get, "/steal", 200, "{}");
+
+        var error = await Assert.ThrowsAsync<GitHubApiException>(
+            () => Create(api).SendAsync(HttpMethod.Get, url, null, Secret, Ct));
+
+        Assert.Equal(502, error.StatusCode);
+        Assert.Equal("Refusing to send the GitHub token to another host.", error.Message);
+        Assert.Empty(api.Requests);
+    }
+
+    [Fact]
+    public async Task An_absolute_URL_on_the_API_host_carries_the_token_and_one_elsewhere_works_without_it()
+    {
+        var api = new FakeGitHubApi().MapJson(HttpMethod.Get, "/repos/a/b", 200, "{}").MapJson(HttpMethod.Get, "/x", 200, "{}");
+        var http = Create(api);
+
+        using var same = await http.SendAsync(HttpMethod.Get, "https://api.github.com/repos/a/b?page=2", null, Secret, Ct);
+        using var other = await http.SendAsync(HttpMethod.Get, "https://codeload.github.com/x", null, null, Ct);
+
+        Assert.True(api.Requests[0].Headers.ContainsKey("Authorization"));
+        Assert.False(api.Requests[1].Headers.ContainsKey("Authorization"));
+    }
+
     [Fact]
     public async Task A_custom_accept_replaces_the_default()
     {
