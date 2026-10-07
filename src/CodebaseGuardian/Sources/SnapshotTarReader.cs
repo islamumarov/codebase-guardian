@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace CodebaseGuardian.Sources;
 
 /// <param name="MaxFileBytes">A larger regular file is reported as skipped and its data is not read.</param>
-/// <param name="MaxTotalBytes">The content bytes of all yielded files together; the snapshot stops before exceeding it.</param>
+/// <param name="MaxTotalBytes">Uncompressed bytes read from the archive (headers, padding and skipped files included); the snapshot stops before exceeding it.</param>
 /// <param name="MaxFiles">The number of files (read or skipped) yielded; the snapshot stops before exceeding it.</param>
 public sealed record SnapshotCaps(long MaxFileBytes, long MaxTotalBytes, int MaxFiles);
 
@@ -22,9 +22,9 @@ internal static class SnapshotTarReader
         Stream gzipTar, SnapshotCaps caps, ILogger logger, [EnumeratorCancellation] CancellationToken ct)
     {
         await using var gzip = new GZipStream(gzipTar, CompressionMode.Decompress, leaveOpen: true);
-        await using var tar = new TarReader(gzip, leaveOpen: true);
+        var counted = new LimitedReadStream(gzip, caps.MaxTotalBytes);
+        await using var tar = new TarReader(counted, leaveOpen: true);
         var files = 0;
-        long bytes = 0;
 
         while (true)
         {
@@ -47,7 +47,7 @@ internal static class SnapshotTarReader
                     {
                         file = new SnapshotFile(path, null, SnapshotLimits.TooLargeReason);
                     }
-                    else if (bytes + entry.Length > caps.MaxTotalBytes)
+                    else if (counted.Count + entry.Length > caps.MaxTotalBytes)
                     {
                         stop = true;
                     }
@@ -57,8 +57,13 @@ internal static class SnapshotTarReader
                     }
                 }
             }
-            catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException or FormatException)
+            catch (ByteLimitReachedException)
             {
+                stop = true;
+            }
+            catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException or FormatException or InvalidOperationException)
+            {
+                // InvalidOperationException: the BCL reader's answer to a header whose size field exceeds what it can hold.
                 failure = ex.Message;
             }
 
@@ -68,23 +73,79 @@ internal static class SnapshotTarReader
                 yield break;
             }
 
-            if (entry is null)
+            if (stop)
             {
+                yield return Incomplete($"stopped after {files} files and {counted.Count} bytes (Guardian:Remote:MaxSnapshotFiles / MaxSnapshotBytes)");
                 yield break;
             }
 
-            if (stop)
+            if (entry is null)
             {
-                yield return Incomplete($"stopped after {files} files and {bytes} bytes (Guardian:Remote:MaxSnapshotFiles / MaxSnapshotBytes)");
                 yield break;
             }
 
             if (file is not null)
             {
                 files++;
-                bytes += file.Content?.Length ?? 0;
                 yield return file;
             }
+        }
+    }
+
+    private sealed class ByteLimitReachedException : IOException;
+
+    /// <summary>Counts the bytes read and throws <see cref="ByteLimitReachedException"/> instead of delivering more than the limit.</summary>
+    private sealed class LimitedReadStream(Stream inner, long limit) : Stream
+    {
+        public long Count { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            Take(await inner.ReadAsync(buffer[..Allowed(buffer.Length)], cancellationToken));
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override int Read(Span<byte> buffer) => Take(inner.Read(buffer[..Allowed(buffer.Length)]));
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        // Ask for at most one byte beyond the limit: reaching it proves the archive is larger without decompressing more.
+        private int Allowed(int requested) => (int)Math.Min(requested, Math.Max(limit - Count, 0) + 1);
+
+        private int Take(int read)
+        {
+            Count += read;
+            if (Count > limit)
+            {
+                Count = limit;
+                throw new ByteLimitReachedException();
+            }
+
+            return read;
         }
     }
 

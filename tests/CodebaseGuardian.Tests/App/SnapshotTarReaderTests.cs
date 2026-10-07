@@ -1,4 +1,5 @@
 using System.Formats.Tar;
+using System.IO.Compression;
 using System.Text;
 using CodebaseGuardian.Sources;
 using CodebaseGuardian.Tests.Infrastructure;
@@ -110,7 +111,7 @@ public class SnapshotTarReaderTests
     {
         var archive = TarballBuilder.Build([File("big.bin", new string('x', 20)), File("small.txt", "ok")]);
 
-        var files = await Read(archive, new SnapshotCaps(10, 1000, 100));
+        var files = await Read(archive, new SnapshotCaps(10, 100_000, 100));
 
         Assert.Equal(["big.bin", "small.txt"], files.Select(f => f.Path));
         Assert.Null(files[0].Content);
@@ -124,32 +125,100 @@ public class SnapshotTarReaderTests
     {
         var archive = TarballBuilder.Build([File("a", "1"), File("b", "2"), File("c", "3")]);
 
-        var files = await Read(archive, new SnapshotCaps(1000, 1000, 2));
+        var files = await Read(archive, new SnapshotCaps(1000, 100_000, 2));
 
         Assert.Equal(["a", "b", ""], files.Select(f => f.Path));
         var sentinel = files[2];
         Assert.True(sentinel.IsIncompleteMarker);
         Assert.Null(sentinel.Content);
-        Assert.Equal("stopped after 2 files and 2 bytes (Guardian:Remote:MaxSnapshotFiles / MaxSnapshotBytes)", sentinel.Skipped);
+        Assert.Matches(@"^stopped after 2 files and \d+ bytes \(Guardian:Remote:MaxSnapshotFiles / MaxSnapshotBytes\)$", sentinel.Skipped);
     }
 
     [Fact]
     public async Task Exactly_MaxFiles_files_end_without_a_sentinel()
     {
-        var files = await Read(TarballBuilder.Build([File("a", "1"), File("b", "2")]), new SnapshotCaps(1000, 1000, 2));
+        var files = await Read(TarballBuilder.Build([File("a", "1"), File("b", "2")]), new SnapshotCaps(1000, 100_000, 2));
 
         Assert.Equal(["a", "b"], files.Select(f => f.Path));
     }
 
     [Fact]
-    public async Task More_bytes_than_MaxTotalBytes_yield_files_so_far_then_a_sentinel()
+    public async Task More_uncompressed_bytes_than_MaxTotalBytes_yield_the_files_before_the_limit_then_a_sentinel()
     {
-        var archive = TarballBuilder.Build([File("a", "12345678"), File("b", "abcdefgh")]);
+        // The cap leaves room for everything up to and including file "a" plus a little: the next entry's headers overflow it.
+        var upToA = Uncompressed(TarballBuilder.Build([File("a", "12345678")])) - 1024; // minus the end-of-archive blocks
+        var archive = TarballBuilder.Build([File("a", "12345678"), File("b", "abcdefgh"), File("c", "ABCDEFGH")]);
 
-        var files = await Read(archive, new SnapshotCaps(1000, 10, 100));
+        var files = await Read(archive, new SnapshotCaps(1000, upToA + 600, 100));
 
-        Assert.Equal(["a", ""], files.Select(f => f.Path));
-        Assert.Equal("stopped after 1 files and 8 bytes (Guardian:Remote:MaxSnapshotFiles / MaxSnapshotBytes)", files[1].Skipped);
+        Assert.Equal(["a", ""], files.Select(f => f.Path).Take(2));
+        Assert.True(files[^1].IsIncompleteMarker);
+        Assert.DoesNotContain(files, f => f.Path == "c");
+        Assert.Matches(@"^stopped after \d+ files and \d+ bytes \(Guardian:Remote:MaxSnapshotFiles / MaxSnapshotBytes\)$", files[^1].Skipped);
+    }
+
+    [Fact]
+    public async Task The_data_of_skipped_over_cap_files_counts_towards_MaxTotalBytes()
+    {
+        var archive = TarballBuilder.Build([File("big.bin", new string('x', 5 * 1024 * 1024))]);
+
+        var files = await Read(archive, new SnapshotCaps(SnapshotLimits.MaxFileBytes, 1024 * 1024, 100));
+
+        Assert.Equal(["big.bin", ""], files.Select(f => f.Path));
+        Assert.Null(files[0].Content);
+        Assert.Equal(SnapshotLimits.TooLargeReason, files[0].Skipped);
+        Assert.True(files[1].IsIncompleteMarker);
+        Assert.StartsWith("stopped after 1 files and 1048576 bytes", files[1].Skipped);
+    }
+
+    [Theory]
+    [InlineData('x')]
+    [InlineData('L')]
+    public async Task A_header_with_an_impossible_size_yields_the_sentinel_instead_of_throwing(char typeFlag)
+    {
+        var files = await Read(Gzip(OversizedHeader(typeFlag)));
+
+        var sentinel = Assert.Single(files);
+        Assert.True(sentinel.IsIncompleteMarker);
+        Assert.StartsWith("the archive could not be read: ", sentinel.Skipped);
+    }
+
+    private static int Uncompressed(byte[] gzip)
+    {
+        using var reader = new GZipStream(new MemoryStream(gzip), CompressionMode.Decompress);
+        using var sink = new MemoryStream();
+        reader.CopyTo(sink);
+        return (int)sink.Length;
+    }
+
+    private static byte[] Gzip(byte[] data)
+    {
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Fastest, leaveOpen: true))
+        {
+            gzip.Write(data);
+        }
+
+        return output.ToArray();
+    }
+
+    /// <summary>One ustar header block of the given type whose size field says 77777777777 (octal, about 8 GB), then the end of the archive.</summary>
+    private static byte[] OversizedHeader(char typeFlag)
+    {
+        var header = new byte[512 * 3];
+        Encoding.ASCII.GetBytes("pax").CopyTo(header, 0);
+        Encoding.ASCII.GetBytes("0000644\0").CopyTo(header, 100);
+        Encoding.ASCII.GetBytes("0000000\0").CopyTo(header, 108);
+        Encoding.ASCII.GetBytes("0000000\0").CopyTo(header, 116);
+        Encoding.ASCII.GetBytes("77777777777\0").CopyTo(header, 124);
+        Encoding.ASCII.GetBytes("00000000000\0").CopyTo(header, 136);
+        Encoding.ASCII.GetBytes("        ").CopyTo(header, 148);
+        header[156] = (byte)typeFlag;
+        Encoding.ASCII.GetBytes("ustar\0").CopyTo(header, 257);
+        Encoding.ASCII.GetBytes("00").CopyTo(header, 263);
+        var checksum = header.Take(512).Sum(b => b);
+        Encoding.ASCII.GetBytes(Convert.ToString(checksum, 8).PadLeft(6, '0') + "\0 ").CopyTo(header, 148);
+        return header;
     }
 
     [Fact]
