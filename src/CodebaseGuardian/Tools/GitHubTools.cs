@@ -11,6 +11,15 @@ using ModelContextProtocol.Server;
 namespace CodebaseGuardian.Tools;
 
 /// <summary>
+/// Output schema of <c>create_issue</c> and <c>open_pull_request</c>. The tools return their <see cref="CallToolResult"/>
+/// directly, so the SDK cannot infer the schema; <see cref="Number"/> and <see cref="Url"/> are absent when declined.
+/// </summary>
+public sealed record GitHubItemResult(string Status, int? Number = null, string? Url = null);
+
+/// <summary>Output schema of <c>comment_on_pr</c>; <see cref="CommentId"/> and <see cref="Url"/> are absent when declined.</summary>
+public sealed record GitHubCommentResult(string Status, long? CommentId = null, string? Url = null);
+
+/// <summary>
 /// Outward-facing GitHub actions. They never run without the user's confirmation, and they must stay synchronous:
 /// SDK 2.2.0 cannot combine MRTR with the Tasks extension.
 /// </summary>
@@ -25,7 +34,7 @@ public sealed partial class GitHubTools(IGitHubClient github, ISecretScanner sca
     private const string ConfirmRequired =
         "This action writes to GitHub. Your client cannot show a confirmation prompt, so ask the user to approve it, then call again with confirm: true.";
 
-    [McpServerTool(Name = "create_issue", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true)]
+    [McpServerTool(Name = "create_issue", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true, OutputSchemaType = typeof(GitHubItemResult))]
     [Description("Creates an issue in the GitHub repository. Writes to GitHub. The user is asked to confirm; if your client cannot show prompts, ask the user yourself and pass confirm: true.")]
     public Task<CallToolResult> CreateIssue(
         McpServer server,
@@ -63,7 +72,7 @@ public sealed partial class GitHubTools(IGitHubClient github, ISecretScanner sca
             return Created(("number", issue.Number), ("url", issue.HtmlUrl));
         });
 
-    [McpServerTool(Name = "comment_on_pr", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true)]
+    [McpServerTool(Name = "comment_on_pr", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true, OutputSchemaType = typeof(GitHubCommentResult))]
     [Description("Adds a comment to a pull request (or issue) in the GitHub repository. Writes to GitHub. The user is asked to confirm; if your client cannot show prompts, ask the user yourself and pass confirm: true.")]
     public Task<CallToolResult> CommentOnPr(
         McpServer server,
@@ -93,7 +102,7 @@ public sealed partial class GitHubTools(IGitHubClient github, ISecretScanner sca
             return Created(("commentId", comment.Id), ("url", comment.HtmlUrl));
         });
 
-    [McpServerTool(Name = "open_pull_request", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true)]
+    [McpServerTool(Name = "open_pull_request", ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = true, UseStructuredContent = true, OutputSchemaType = typeof(GitHubItemResult))]
     [Description("Opens a pull request from a branch that is already pushed to GitHub. Writes to GitHub. The user is asked to confirm; if your client cannot show prompts, ask the user yourself and pass confirm: true.")]
     public Task<CallToolResult> OpenPullRequest(
         McpServer server,

@@ -3,9 +3,11 @@ using CodebaseGuardian.Git;
 using CodebaseGuardian.Hosting;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Security;
+using CodebaseGuardian.Sources;
 using CodebaseGuardian.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace CodebaseGuardian.Tests.App;
@@ -36,6 +38,111 @@ public class SecretScannerTests
             Entries.Add((logLevel, formatter(state, exception)));
     }
 
+    private sealed class FakeSource(IReadOnlyList<SnapshotFile> snapshot, Dictionary<string, byte[]>? files = null, DiffSummary? commitDiff = null) : IRepositorySource
+    {
+        public RepositorySourceKind Kind => RepositorySourceKind.GitHub;
+        public string DisplayName => "github.com/o/r";
+        public Task<RepoStatus> GetStatusAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<string?> GetCurrentBranchAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<string?> GetHeadShaAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyDictionary<string, string>> GetBranchHeadsAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<CommitInfo>> GetRecentCommitsAsync(int limit, string? revision = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<IReadOnlyList<CommitInfo>> GetNewCommitsAsync(string tip, IReadOnlyCollection<string> excludeTips, int limit, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DiffSummary> GetDiffSummaryAsync(string? from, string? to, int maxPatchBytes, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DiffSummary> GetCommitDiffAsync(string sha, int maxPatchBytes, CancellationToken ct = default) =>
+            Task.FromResult(commitDiff ?? throw new NotSupportedException());
+        public Task<byte[]?> ReadFileAsync(string path, CancellationToken ct = default) =>
+            Task.FromResult(files is not null && files.TryGetValue(path, out var bytes) ? bytes : null);
+
+        public async IAsyncEnumerable<SnapshotFile> ReadSnapshotAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            foreach (var file in snapshot)
+            {
+                yield return file;
+            }
+
+            await Task.CompletedTask;
+        }
+    }
+
+    private static SnapshotFile Text(string path, string content) => new(path, System.Text.Encoding.UTF8.GetBytes(content), null);
+
+    private static SecretScanner ScannerOver(IRepositorySource source) => new(source, NullLogger<SecretScanner>.Instance);
+
+    [Fact]
+    public async Task An_incomplete_snapshot_keeps_its_findings_and_reports_why_it_stopped()
+    {
+        var source = new FakeSource([Text("k.txt", FakeSecrets.AwsAccessKeyId()), new SnapshotFile("", null, "stopped after 1 files")]);
+
+        var outcome = await ScannerOver(source).ScanWorkingTreeAsync(Ct);
+
+        Assert.Equal("k.txt", Assert.Single(outcome.Findings).Path);
+        Assert.False(outcome.Complete);
+        Assert.Contains("stopped after 1 files", Assert.Single(outcome.Warnings));
+    }
+
+    [Fact]
+    public async Task A_complete_snapshot_reports_complete_and_no_warnings()
+    {
+        var outcome = await ScannerOver(new FakeSource([Text("a.txt", "hello")])).ScanWorkingTreeAsync(Ct);
+
+        Assert.True(outcome.Complete);
+        Assert.Empty(outcome.Warnings);
+    }
+
+    [Fact]
+    public async Task Guardianignore_served_by_the_source_is_honoured()
+    {
+        var secret = FakeSecrets.AwsAccessKeyId();
+        var source = new FakeSource(
+            [Text("fixtures/k.txt", secret), Text("real.txt", secret)],
+            new() { [".guardianignore"] = System.Text.Encoding.UTF8.GetBytes("# test data\nfixtures/**\n") });
+
+        var outcome = await ScannerOver(source).ScanWorkingTreeAsync(Ct);
+
+        Assert.Equal("real.txt", Assert.Single(outcome.Findings).Path);
+        Assert.True(outcome.Complete);
+    }
+
+    [Fact]
+    public async Task A_file_skipped_by_the_per_file_cap_is_not_a_warning()
+    {
+        var outcome = await ScannerOver(new FakeSource([new SnapshotFile("big.bin", null, "larger than 1 MB")])).ScanWorkingTreeAsync(Ct);
+
+        Assert.True(outcome.Complete);
+        Assert.Empty(outcome.Warnings);
+    }
+
+    [Fact]
+    public async Task Staged_scan_without_a_checkout_is_an_argument_error()
+    {
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => ScannerOver(new FakeSource([])).ScanStagedAsync(Ct));
+
+        Assert.Equal("Remote mode has nothing staged.", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_truncated_commit_patch_makes_the_scan_incomplete()
+    {
+        var diff = new DiffSummary("a", "b", [], 0, 0, "", PatchTruncated: true);
+
+        var outcome = await ScannerOver(new FakeSource([], commitDiff: diff)).ScanCommitAsync("abc1234", Ct);
+
+        Assert.False(outcome.Complete);
+        Assert.Equal("Only the first 5242880 bytes of the commit abc1234 patch were scanned.", Assert.Single(outcome.Warnings));
+    }
+
+    [Fact]
+    public async Task A_complete_commit_patch_reports_complete()
+    {
+        var diff = new DiffSummary("a", "b", [], 0, 0, "", PatchTruncated: false);
+
+        var outcome = await ScannerOver(new FakeSource([], commitDiff: diff)).ScanCommitAsync("abc1234", Ct);
+
+        Assert.True(outcome.Complete);
+        Assert.Empty(outcome.Warnings);
+    }
+
     [Fact]
     public async Task A_staged_patch_larger_than_the_scan_limit_logs_a_warning_without_patch_content()
     {
@@ -46,9 +153,9 @@ public class SecretScannerTests
         var logger = new RecordingLogger();
         var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = repo.Path }));
 
-        var findings = await new SecretScanner(git, logger).ScanStagedAsync(Ct);
+        var outcome = await new SecretScanner(git, logger, git).ScanStagedAsync(Ct);
 
-        Assert.Empty(findings); // the secret is past the cap: this is the false all-clear the warning must flag
+        Assert.Empty(outcome.Findings); // the secret is past the cap: this is the false all-clear the warning must flag
         var warning = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
         Assert.Contains("only the first", warning.Message);
         Assert.DoesNotContain("filler", warning.Message);
@@ -64,7 +171,7 @@ public class SecretScannerTests
         var logger = new RecordingLogger();
         var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = repo.Path }));
 
-        await new SecretScanner(git, logger).ScanCommitAsync(sha, Ct);
+        await new SecretScanner(git, logger, git).ScanCommitAsync(sha, Ct);
 
         var warning = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
         Assert.Contains("only the first", warning.Message);
@@ -80,7 +187,7 @@ public class SecretScannerTests
         var logger = new RecordingLogger();
         var git = new GitRepository(new ProcessRunner(), Options.Create(new GuardianOptions { RepositoryPath = repo.Path }));
 
-        await new SecretScanner(git, logger).ScanStagedAsync(Ct);
+        await new SecretScanner(git, logger, git).ScanStagedAsync(Ct);
 
         Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
     }
@@ -108,9 +215,9 @@ public class SecretScannerTests
             repo.WriteFile("real.txt", $"key = {FakeSecrets.AwsAccessKeyId()}\n");
             await using var server = await StartAsync(repo);
 
-            var findings = await Scanner(server).ScanWorkingTreeAsync(Ct);
+            var outcome = await Scanner(server).ScanWorkingTreeAsync(Ct);
 
-            Assert.Equal(["real.txt"], findings.Select(f => f.Path)); // the control: ordinary files are still scanned
+            Assert.Equal(["real.txt"], outcome.Findings.Select(f => f.Path)); // the control: ordinary files are still scanned
         }
         finally
         {
@@ -126,7 +233,7 @@ public class SecretScannerTests
         repo.WriteFile("src/config.txt", $"line one\nkey = {secret}\n");
         await using var server = await StartAsync(repo);
 
-        var finding = Assert.Single(await Scanner(server).ScanWorkingTreeAsync(Ct));
+        var finding = Assert.Single((await Scanner(server).ScanWorkingTreeAsync(Ct)).Findings);
 
         Assert.Equal(new SecretFinding("aws-access-key-id", "src/config.txt", 2, Redactor.Redact(secret)), finding);
         Assert.DoesNotContain(secret, finding.Redacted);
@@ -139,7 +246,7 @@ public class SecretScannerTests
         repo.WriteFile("a.txt", FakeSecrets.AwsAccessKeyId() + " " + FakeSecrets.AwsAccessKeyId() + "\n");
         await using var server = await StartAsync(repo);
 
-        Assert.Single(await Scanner(server).ScanWorkingTreeAsync(Ct));
+        Assert.Single((await Scanner(server).ScanWorkingTreeAsync(Ct)).Findings);
     }
 
     [Fact]
@@ -152,7 +259,7 @@ public class SecretScannerTests
         repo.WriteFile("real.txt", FakeSecrets.AwsAccessKeyId());
         await using var server = await StartAsync(repo);
 
-        var finding = Assert.Single(await Scanner(server).ScanWorkingTreeAsync(Ct));
+        var finding = Assert.Single((await Scanner(server).ScanWorkingTreeAsync(Ct)).Findings);
 
         Assert.Equal("real.txt", finding.Path);
     }
@@ -182,7 +289,7 @@ public class SecretScannerTests
         repo.WriteFile("ok.txt", secret);
         await using var server = await StartAsync(repo);
 
-        var finding = Assert.Single(await Scanner(server).ScanWorkingTreeAsync(Ct));
+        var finding = Assert.Single((await Scanner(server).ScanWorkingTreeAsync(Ct)).Findings);
 
         Assert.Equal("ok.txt", finding.Path);
     }
@@ -196,7 +303,7 @@ public class SecretScannerTests
         repo.WriteFile("unstaged.txt", FakeSecrets.AwsAccessKeyId());
         await using var server = await StartAsync(repo);
 
-        var finding = Assert.Single(await Scanner(server).ScanStagedAsync(Ct));
+        var finding = Assert.Single((await Scanner(server).ScanStagedAsync(Ct)).Findings);
 
         Assert.Equal(("github-token", "staged.txt", 2), (finding.RuleId, finding.Path, finding.Line));
     }
@@ -211,8 +318,8 @@ public class SecretScannerTests
         var removed = repo.Commit("remove");
         await using var server = await StartAsync(repo);
 
-        Assert.Single(await Scanner(server).ScanCommitAsync(added, Ct));
-        Assert.Empty(await Scanner(server).ScanCommitAsync(removed, Ct));
+        Assert.Single((await Scanner(server).ScanCommitAsync(added, Ct)).Findings);
+        Assert.Empty((await Scanner(server).ScanCommitAsync(removed, Ct)).Findings);
     }
 
     [Fact]

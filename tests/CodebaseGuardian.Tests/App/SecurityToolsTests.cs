@@ -73,7 +73,11 @@ public class SecurityToolsTests
 
         var result = await server.Client.CallToolAsync("scan_secrets", Args(), cancellationToken: Ct);
 
-        Assert.Equal(0, result.StructuredContent!.Value.GetProperty("count").GetInt32());
+        var json = result.StructuredContent!.Value;
+        Assert.Equal(0, json.GetProperty("count").GetInt32());
+        Assert.True(json.GetProperty("complete").GetBoolean());
+        Assert.Equal(JsonValueKind.Array, json.GetProperty("warnings").ValueKind);
+        Assert.Equal(0, json.GetProperty("warnings").GetArrayLength());
         Assert.Empty(await EventsPolling.CollectAsync(server, "security.secret_detected", cursor, TimeSpan.FromMilliseconds(200), Ct));
     }
 

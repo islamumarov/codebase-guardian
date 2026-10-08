@@ -6,6 +6,7 @@ using CodebaseGuardian.Hosting;
 using CodebaseGuardian.Tests.Infrastructure;
 using Mcp.Events;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -98,6 +99,25 @@ public sealed class HttpTransportTests : IDisposable
         using var response = await http.SendAsync(request, Ct);
 
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task The_startup_log_names_the_endpoint_a_client_connects_to()
+    {
+        const string prefix = "MCP endpoint: ";
+        var logs = new CapturingLoggerProvider();
+        await using var host = await GuardianHttpTestHost.StartAsync(
+            _repo.Path,
+            new Dictionary<string, string?> { ["Logging:LogLevel:CodebaseGuardian"] = "Information" },
+            services => services.AddSingleton<ILoggerProvider>(logs),
+            Ct);
+
+        var endpoint = Assert.Single(logs.Messages, m => m.StartsWith(prefix, StringComparison.Ordinal))[prefix.Length..];
+        await using var client = await McpClient.CreateAsync(
+            new HttpClientTransport(new HttpClientTransportOptions { Endpoint = new Uri(endpoint), TransportMode = HttpTransportMode.StreamableHttp }),
+            cancellationToken: Ct);
+
+        Assert.Contains(await client.ListToolsAsync(cancellationToken: Ct), t => t.Name == "repo_status");
     }
 
     [Fact]

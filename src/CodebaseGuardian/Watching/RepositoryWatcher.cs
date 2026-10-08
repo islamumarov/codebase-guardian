@@ -4,6 +4,7 @@ using CodebaseGuardian.Dependencies;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.Hosting;
 using CodebaseGuardian.Json;
+using CodebaseGuardian.Sources;
 using Mcp.Events;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -22,7 +23,7 @@ public sealed class RepositoryWatcher : BackgroundService
     private const int MaxFilesInCommitEvent = 100;
     private const int MaxPathsInFilesEvent = 200;
 
-    private readonly IGitRepository _git;
+    private readonly IRepositorySource _source;
     private readonly IEventPublisher _publisher;
     private readonly IReadOnlyList<IRepositoryChangeHandler> _handlers;
     private readonly GuardianOptions _options;
@@ -35,13 +36,13 @@ public sealed class RepositoryWatcher : BackgroundService
     private WorkingTreeWatcher? _workingTree;
 
     public RepositoryWatcher(
-        IGitRepository git,
+        IRepositorySource source,
         IEventPublisher publisher,
         IEnumerable<IRepositoryChangeHandler> handlers,
         IOptions<GuardianOptions> options,
         ILogger<RepositoryWatcher> logger)
     {
-        _git = git;
+        _source = source;
         _publisher = publisher;
         _handlers = [.. handlers];
         _options = options.Value;
@@ -112,8 +113,8 @@ public sealed class RepositoryWatcher : BackgroundService
     {
         try
         {
-            var heads = await _git.GetBranchHeadsAsync(cancellationToken);
-            _currentBranch = await _git.GetCurrentBranchAsync(cancellationToken);
+            var heads = await _source.GetBranchHeadsAsync(cancellationToken);
+            _currentBranch = await _source.GetCurrentBranchAsync(cancellationToken);
             foreach (var sha in heads.Values)
             {
                 Remember(sha);
@@ -129,10 +130,15 @@ public sealed class RepositoryWatcher : BackgroundService
 
     private void StartWorkingTreeWatcher()
     {
+        if (_source is not IGitRepository local)
+        {
+            return; // a remote repository has no working tree to watch
+        }
+
         try
         {
             _workingTree = new WorkingTreeWatcher(
-                _git.RootPath, TimeSpan.FromMilliseconds(_options.FileChangeDebounceMs), OnFilesChangedAsync, _logger);
+                local.RootPath, TimeSpan.FromMilliseconds(_options.FileChangeDebounceMs), OnFilesChangedAsync, _logger);
             _workingTree.Start();
         }
         catch (Exception exception)
@@ -144,8 +150,8 @@ public sealed class RepositoryWatcher : BackgroundService
     private async Task PollAsync(CancellationToken cancellationToken)
     {
         var previous = _heads!;
-        var heads = await _git.GetBranchHeadsAsync(cancellationToken);
-        var current = await _git.GetCurrentBranchAsync(cancellationToken);
+        var heads = await _source.GetBranchHeadsAsync(cancellationToken);
+        var current = await _source.GetCurrentBranchAsync(cancellationToken);
 
         if (current != _currentBranch)
         {
@@ -218,14 +224,14 @@ public sealed class RepositoryWatcher : BackgroundService
     {
         try
         {
-            return await _git.GetNewCommitsAsync(head, [.. previous.Values.Distinct()], MaxNewCommitsPerBranch, cancellationToken);
+            return await _source.GetNewCommitsAsync(head, [.. previous.Values.Distinct()], MaxNewCommitsPerBranch, cancellationToken);
         }
         catch (GitException exception)
         {
             // A previous tip may be gone (pruned after a force-push or branch deletion): exclude only the tips that exist now.
             _logger.LogWarning(exception, "Git rejected a previous branch tip; retrying with the current tips of the other branches.");
             var others = heads.Where(h => h.Key != branch).Select(h => h.Value).Distinct().ToList();
-            return await _git.GetNewCommitsAsync(head, others, MaxNewCommitsPerBranch, cancellationToken);
+            return await _source.GetNewCommitsAsync(head, others, MaxNewCommitsPerBranch, cancellationToken);
         }
     }
 
@@ -234,7 +240,7 @@ public sealed class RepositoryWatcher : BackgroundService
         DiffSummary? diff = null;
         try
         {
-            diff = await _git.GetCommitDiffAsync(commit.Sha, 0, cancellationToken);
+            diff = await _source.GetCommitDiffAsync(commit.Sha, 0, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

@@ -16,7 +16,7 @@ public enum SecretScanScope
     [JsonStringEnumMemberName("commit")] Commit,
 }
 
-public sealed record SecretScanResult(string Scope, IReadOnlyList<SecretFinding> Findings, int Count);
+public sealed record SecretScanResult(string Scope, IReadOnlyList<SecretFinding> Findings, int Count, bool Complete, IReadOnlyList<string> Warnings);
 
 [McpServerToolType]
 public sealed class SecurityTools(ISecretScanner scanner, IEventPublisher publisher)
@@ -30,12 +30,12 @@ public sealed class SecurityTools(ISecretScanner scanner, IEventPublisher publis
         ToolErrors.RunAsync(async () =>
         {
             string name;
-            IReadOnlyList<SecretFinding> findings;
+            SecretScanOutcome outcome;
             switch (scope)
             {
                 case SecretScanScope.Staged:
                     name = "staged";
-                    findings = await scanner.ScanStagedAsync(cancellationToken);
+                    outcome = await scanner.ScanStagedAsync(cancellationToken);
                     break;
                 case SecretScanScope.Commit:
                     name = "commit";
@@ -44,14 +44,15 @@ public sealed class SecurityTools(ISecretScanner scanner, IEventPublisher publis
                         throw new ArgumentException("The commit argument is required when scope is commit.", nameof(commit));
                     }
 
-                    findings = await scanner.ScanCommitAsync(GitRevision.Require(commit, nameof(commit)), cancellationToken);
+                    outcome = await scanner.ScanCommitAsync(GitRevision.Require(commit, nameof(commit)), cancellationToken);
                     break;
                 default:
                     name = "working_tree";
-                    findings = await scanner.ScanWorkingTreeAsync(cancellationToken);
+                    outcome = await scanner.ScanWorkingTreeAsync(cancellationToken);
                     break;
             }
 
+            var findings = outcome.Findings;
             if (findings.Count > 0)
             {
                 await publisher.PublishAsync(
@@ -60,6 +61,6 @@ public sealed class SecurityTools(ISecretScanner scanner, IEventPublisher publis
                     cancellationToken: cancellationToken);
             }
 
-            return new SecretScanResult(name, findings, findings.Count);
+            return new SecretScanResult(name, findings, findings.Count, outcome.Complete, outcome.Warnings);
         });
 }

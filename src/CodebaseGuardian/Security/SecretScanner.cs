@@ -1,15 +1,19 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using CodebaseGuardian.Git;
+using CodebaseGuardian.Sources;
 using Microsoft.Extensions.Logging;
 
 namespace CodebaseGuardian.Security;
 
 public interface ISecretScanner
 {
-    Task<IReadOnlyList<SecretFinding>> ScanWorkingTreeAsync(CancellationToken ct);
-    Task<IReadOnlyList<SecretFinding>> ScanStagedAsync(CancellationToken ct);
-    Task<IReadOnlyList<SecretFinding>> ScanCommitAsync(string sha, CancellationToken ct);
+    Task<SecretScanOutcome> ScanWorkingTreeAsync(CancellationToken ct);
+
+    /// <summary>Throws <see cref="ArgumentException"/> ("Remote mode has nothing staged.") when there is no local checkout.</summary>
+    Task<SecretScanOutcome> ScanStagedAsync(CancellationToken ct);
+
+    Task<SecretScanOutcome> ScanCommitAsync(string sha, CancellationToken ct);
 
     /// <summary>Line numbers are 1-based.</summary>
     IReadOnlyList<SecretFinding> ScanText(string path, string content);
@@ -21,55 +25,70 @@ public interface ISecretScanner
     string RedactSecrets(string text);
 }
 
-public sealed class SecretScanner(IGitRepository git, ILogger<SecretScanner> logger) : ISecretScanner
+public sealed class SecretScanner(IRepositorySource source, ILogger<SecretScanner> logger, IGitRepository? git = null) : ISecretScanner
 {
-    internal const long MaxFileBytes = 1024 * 1024;
     internal const int MaxPatchBytes = 5 * 1024 * 1024;
     private const int BinarySniffBytes = 8192;
 
-    public async Task<IReadOnlyList<SecretFinding>> ScanWorkingTreeAsync(CancellationToken ct)
+    public async Task<SecretScanOutcome> ScanWorkingTreeAsync(CancellationToken ct)
     {
-        var root = git.RootPath;
-        var ignore = await LoadIgnoreAsync(root, ct);
+        var ignore = await LoadIgnoreAsync(ct);
         var findings = new List<SecretFinding>();
+        var warnings = new List<string>();
 
-        foreach (var path in await git.ListFilesAsync(ct))
+        await foreach (var file in source.ReadSnapshotAsync(ct))
         {
             ct.ThrowIfCancellationRequested();
-            if (ignore.IsIgnored(path))
+            if (file.IsIncompleteMarker)
+            {
+                warnings.Add($"Snapshot incomplete: {file.Skipped}");
+                continue;
+            }
+
+            // A file over the per-file cap is documented behaviour (Content is null), not a gap worth a warning.
+            if (ignore.IsIgnored(file.Path) || file.Content is not { } content)
             {
                 continue;
             }
 
-            var bytes = await TryReadAsync(Path.Combine(root, path), ct);
-            if (bytes is null || Array.IndexOf(bytes, (byte)0, 0, Math.Min(bytes.Length, BinarySniffBytes)) >= 0)
+            var span = content.Span;
+            if (span[..Math.Min(span.Length, BinarySniffBytes)].Contains((byte)0))
             {
                 continue;
             }
 
-            findings.AddRange(ScanText(path, Encoding.UTF8.GetString(bytes)));
+            findings.AddRange(ScanText(file.Path, Decode(span)));
         }
 
-        return findings;
+        return new SecretScanOutcome(findings, warnings.Count == 0, warnings);
     }
 
-    public async Task<IReadOnlyList<SecretFinding>> ScanStagedAsync(CancellationToken ct) =>
-        ScanDiff(await git.GetStagedDiffAsync(MaxPatchBytes, ct), "staged changes");
-
-    public async Task<IReadOnlyList<SecretFinding>> ScanCommitAsync(string sha, CancellationToken ct) =>
-        ScanDiff(await git.GetCommitDiffAsync(GitRevision.Require(sha, nameof(sha)), MaxPatchBytes, ct), $"commit {sha}");
-
-    // A capped patch means the scan saw only its beginning: say so rather than report a silent all-clear.
-    private IReadOnlyList<SecretFinding> ScanDiff(DiffSummary diff, string scope)
+    public async Task<SecretScanOutcome> ScanStagedAsync(CancellationToken ct)
     {
-        if (diff.PatchTruncated)
+        if (git is null)
         {
-            logger.LogWarning(
-                "Secret scan of {Scope} covered only the first {Bytes} bytes of the patch; later changes were not scanned.",
-                scope, MaxPatchBytes);
+            throw new ArgumentException("Remote mode has nothing staged.");
         }
 
-        return ScanPatch(diff.Patch);
+        return ScanDiff(await git.GetStagedDiffAsync(MaxPatchBytes, ct), "staged changes");
+    }
+
+    public async Task<SecretScanOutcome> ScanCommitAsync(string sha, CancellationToken ct) =>
+        ScanDiff(await source.GetCommitDiffAsync(GitRevision.Require(sha, nameof(sha)), MaxPatchBytes, ct), $"commit {sha}");
+
+    // A capped patch means the scan saw only its beginning: say so rather than report a silent all-clear.
+    private SecretScanOutcome ScanDiff(DiffSummary diff, string scope)
+    {
+        var findings = ScanPatch(diff.Patch);
+        if (!diff.PatchTruncated)
+        {
+            return new SecretScanOutcome(findings, true, []);
+        }
+
+        logger.LogWarning(
+            "Secret scan of {Scope} covered only the first {Bytes} bytes of the patch; later changes were not scanned.",
+            scope, MaxPatchBytes);
+        return new SecretScanOutcome(findings, false, [$"Only the first {MaxPatchBytes} bytes of the {scope} patch were scanned."]);
     }
 
     public IReadOnlyList<SecretFinding> ScanText(string path, string content)
@@ -180,36 +199,16 @@ public sealed class SecretScanner(IGitRepository git, ILogger<SecretScanner> log
         }
     }
 
-    private static async Task<GuardianIgnore> LoadIgnoreAsync(string root, CancellationToken ct)
+    private async Task<GuardianIgnore> LoadIgnoreAsync(CancellationToken ct)
     {
-        try
-        {
-            return GuardianIgnore.Parse(await File.ReadAllTextAsync(Path.Combine(root, GuardianIgnore.FileName), ct));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return GuardianIgnore.None;
-        }
+        var bytes = await source.ReadFileAsync(GuardianIgnore.FileName, ct);
+        return bytes is null ? GuardianIgnore.None : GuardianIgnore.Parse(Decode(bytes));
     }
 
-    // The file list can name tracked files that were deleted from the working tree, or directories (submodules).
-    private async Task<byte[]?> TryReadAsync(string fullPath, CancellationToken ct)
+    // Like File.ReadAllText: UTF-8 by default, a byte order mark is honoured and not part of the text.
+    private static string Decode(ReadOnlySpan<byte> bytes)
     {
-        try
-        {
-            var info = new FileInfo(fullPath);
-            // A symlink's content is the target's, which may lie outside the repository (~/.aws/credentials): never follow it.
-            if (info.LinkTarget is not null || !info.Exists || info.Length > MaxFileBytes)
-            {
-                return null;
-            }
-
-            return await File.ReadAllBytesAsync(fullPath, ct);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            logger.LogDebug(ex, "Skipping unreadable file during secret scan.");
-            return null;
-        }
+        using var reader = new StreamReader(new MemoryStream(bytes.ToArray()), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
     }
 }

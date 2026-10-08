@@ -1,8 +1,9 @@
 using System.Globalization;
-using System.Text;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using CodebaseGuardian.Hosting;
 using CodebaseGuardian.Processes;
+using CodebaseGuardian.Sources;
 using Microsoft.Extensions.Options;
 
 namespace CodebaseGuardian.Git;
@@ -21,8 +22,6 @@ public sealed partial class GitRepository : IGitRepository
     private const char RecordSeparator = '\u001e';
 
     private const string LogFormat = "%H%x1f%h%x1f%an%x1f%ae%x1f%cI%x1f%s%x1f%P%x1e";
-
-    private static readonly UTF8Encoding Utf8 = new(false);
 
     private static readonly IReadOnlyDictionary<string, string> GitEnvironment =
         new Dictionary<string, string> { ["GIT_TERMINAL_PROMPT"] = "0" };
@@ -47,6 +46,10 @@ public sealed partial class GitRepository : IGitRepository
     /// Synchronous because it is a property; the work is a single quick <c>rev-parse</c>.
     /// </summary>
     public string RootPath => _rootPath ?? ResolveRootAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+    public RepositorySourceKind Kind => RepositorySourceKind.Local;
+
+    public string DisplayName => RootPath;
 
     // ---- head, branch, status
 
@@ -400,19 +403,8 @@ public sealed partial class GitRepository : IGitRepository
 
     private static (string Patch, bool Truncated) CapPatch(ProcessResult patch, int maxBytes)
     {
-        var bytes = Utf8.GetBytes(patch.StandardOutput);
-        if (bytes.Length <= maxBytes)
-        {
-            return (patch.StandardOutput, patch.OutputTruncated);
-        }
-
-        var cut = maxBytes;
-        while (cut > 0 && (bytes[cut] & 0xC0) == 0x80)
-        {
-            cut--; // do not split a multi-byte character
-        }
-
-        return (Utf8.GetString(bytes, 0, cut), true);
+        var (text, cut) = PatchCap.Apply(patch.StandardOutput, maxBytes);
+        return (text, cut || patch.OutputTruncated);
     }
 
     // ---- files and remotes
@@ -441,6 +433,110 @@ public sealed partial class GitRepository : IGitRepository
         ThrowIfFailed(result, "config");
         var url = result.StandardOutput.Trim();
         return url.Length == 0 ? null : url;
+    }
+
+    // ---- snapshot
+
+    public async Task<byte[]?> ReadFileAsync(string path, CancellationToken ct = default)
+    {
+        var fullPath = ResolveInsideRoot(path);
+        try
+        {
+            var info = new FileInfo(fullPath);
+            // A symlink's content is the target's, which may lie outside the repository: never follow it.
+            if (!info.Exists || info.LinkTarget is not null || HasSymlinkedParent(info))
+            {
+                return null;
+            }
+
+            return await File.ReadAllBytesAsync(fullPath, ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null; // vanished or unreadable between the check and the read
+        }
+    }
+
+    public async IAsyncEnumerable<SnapshotFile> ReadSnapshotAsync([EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var root = RootPath;
+        foreach (var path in await ListFilesAsync(ct))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // The file list can name tracked files that were deleted from the working tree, or directories (submodules).
+            var fullPath = Path.Combine(root, path);
+            long length;
+            try
+            {
+                var info = new FileInfo(fullPath);
+                // A symlink's content is the target's, which may lie outside the repository (~/.aws/credentials): never follow it.
+                if (info.LinkTarget is not null || !info.Exists)
+                {
+                    continue;
+                }
+
+                length = info.Length;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            if (length > SnapshotLimits.MaxFileBytes)
+            {
+                yield return new SnapshotFile(path, null, SnapshotLimits.TooLargeReason);
+                continue;
+            }
+
+            byte[] bytes;
+            try
+            {
+                bytes = await File.ReadAllBytesAsync(fullPath, ct);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            yield return new SnapshotFile(path, bytes, null);
+        }
+    }
+
+    private string ResolveInsideRoot(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        if (path.Length == 0 || path.Contains('\0') || Path.IsPathRooted(path) || path[0] is '/' or '\\')
+        {
+            throw new ArgumentException($"'{path}' is not a relative snapshot path.", nameof(path));
+        }
+
+        if (path.Split('/', '\\').Any(segment => segment == ".."))
+        {
+            throw new ArgumentException($"'{path}' leaves the repository.", nameof(path));
+        }
+
+        return Path.Combine(RootPath, path);
+    }
+
+    // A symlinked directory on the way to the file would also lead outside the repository.
+    private bool HasSymlinkedParent(FileInfo file)
+    {
+        var root = Path.TrimEndingDirectorySeparator(RootPath);
+        for (var directory = file.Directory; directory is not null; directory = directory.Parent)
+        {
+            if (string.Equals(Path.TrimEndingDirectorySeparator(directory.FullName), root, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (directory.LinkTarget is not null)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // ---- plumbing

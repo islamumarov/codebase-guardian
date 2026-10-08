@@ -20,7 +20,13 @@ public sealed class SecretScanCommitHandler(ISecretScanner scanner, IEventPublis
         {
             try
             {
-                var findings = await scanner.ScanCommitAsync(commit.Sha, cancellationToken);
+                var outcome = await scanner.ScanCommitAsync(commit.Sha, cancellationToken);
+                foreach (var warning in outcome.Warnings)
+                {
+                    logger.LogWarning("Secret scan of commit {Sha}: {Warning}", commit.Sha, warning);
+                }
+
+                var findings = outcome.Findings;
                 if (findings.Count > 0)
                 {
                     await publisher.PublishAsync(

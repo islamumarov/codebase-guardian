@@ -139,6 +139,9 @@ dotnet run --project src/CodebaseGuardian -- --transport http --repo . --urls ht
 { "servers": { "codebase-guardian": { "type": "http", "url": "http://127.0.0.1:5199/mcp" } } }
 ```
 
+At startup the server logs the URL to give clients (`MCP endpoint: http://127.0.0.1:5199/mcp`). The root URL that Kestrel
+reports as `Now listening on` answers 404.
+
 ## What it offers
 
 Full contract: spec [section 5](docs/specs/2026-10-04-codebase-guardian-design.md).

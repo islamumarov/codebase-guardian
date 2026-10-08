@@ -11,7 +11,9 @@ public sealed class FakeGitHubApi : HttpMessageHandler
 
     private readonly object _gate = new();
     private readonly List<(HttpMethod Method, string Path, Func<HttpRequestMessage, string, HttpResponseMessage> Respond)> _routes = [];
+    private readonly List<(HttpMethod Method, string Prefix, Func<HttpRequestMessage, string, HttpResponseMessage> Respond)> _prefixRoutes = [];
     private readonly List<(HttpMethod Method, string PathAndQuery, string Body, IReadOnlyDictionary<string, string> Headers)> _requests = [];
+    private readonly List<Uri> _requestUris = [];
     private readonly List<string> _unmatched = [];
 
     public IReadOnlyList<(HttpMethod Method, string PathAndQuery, string Body, IReadOnlyDictionary<string, string> Headers)> Requests
@@ -21,6 +23,18 @@ public sealed class FakeGitHubApi : HttpMessageHandler
             lock (_gate)
             {
                 return [.. _requests];
+            }
+        }
+    }
+
+    /// <summary>The full URI of every request, in order.</summary>
+    public IReadOnlyList<Uri> RequestUris
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _requestUris];
             }
         }
     }
@@ -48,6 +62,17 @@ public sealed class FakeGitHubApi : HttpMessageHandler
         return this;
     }
 
+    /// <summary>Routes every path starting with <paramref name="prefix"/>; consulted only when no exact route matched. The first matching prefix wins.</summary>
+    public FakeGitHubApi MapPrefix(HttpMethod method, string prefix, Func<HttpRequestMessage, string, HttpResponseMessage> respond)
+    {
+        lock (_gate)
+        {
+            _prefixRoutes.Add((method, prefix, respond));
+        }
+
+        return this;
+    }
+
     public FakeGitHubApi MapJson(HttpMethod method, string path, int status, string json, IDictionary<string, string>? headers = null) =>
         Map(method, path, (_, _) =>
         {
@@ -68,7 +93,7 @@ public sealed class FakeGitHubApi : HttpMessageHandler
 
     /// <summary>
     /// Replaces the token provider with one that returns <see cref="Token"/>, pins the repository to acme/widgets, and
-    /// makes this handler the primary handler of the "github" named client.
+    /// makes this handler the primary handler of the "github" and "github-archive" named clients.
     /// </summary>
     public void Install(IServiceCollection services)
     {
@@ -77,6 +102,7 @@ public sealed class FakeGitHubApi : HttpMessageHandler
         services.RemoveAll<IGitHubRepositoryResolver>();
         services.AddSingleton<IGitHubRepositoryResolver>(new FixedResolver());
         services.AddHttpClient(GitHubClient.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => this);
+        services.AddHttpClient(GitHubRepositoryApi.ArchiveHttpClientName).ConfigurePrimaryHttpMessageHandler(() => this);
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -95,12 +121,25 @@ public sealed class FakeGitHubApi : HttpMessageHandler
         lock (_gate)
         {
             _requests.Add((request.Method, uri.PathAndQuery, body, headers));
+            _requestUris.Add(uri);
             foreach (var route in _routes)
             {
                 if (route.Method == request.Method && string.Equals(route.Path, path, StringComparison.Ordinal))
                 {
                     respond = route.Respond;
                     break;
+                }
+            }
+
+            if (respond is null)
+            {
+                foreach (var route in _prefixRoutes)
+                {
+                    if (route.Method == request.Method && path.StartsWith(route.Prefix, StringComparison.Ordinal))
+                    {
+                        respond = route.Respond;
+                        break;
+                    }
                 }
             }
 

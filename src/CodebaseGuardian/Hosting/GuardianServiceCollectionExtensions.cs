@@ -7,10 +7,12 @@ using CodebaseGuardian.Checks;
 using CodebaseGuardian.Dependencies;
 using CodebaseGuardian.Git;
 using CodebaseGuardian.GitHub;
+using CodebaseGuardian.Json;
 using CodebaseGuardian.Processes;
 using CodebaseGuardian.Resources;
 using CodebaseGuardian.Scanning;
 using CodebaseGuardian.Security;
+using CodebaseGuardian.Sources;
 using CodebaseGuardian.Tools;
 using CodebaseGuardian.Watching;
 using Mcp.Events;
@@ -39,10 +41,17 @@ public static class GuardianServiceCollectionExtensions
 
         // ValidateOnStart makes an invalid configuration fail the host start itself, also for transports that only
         // build the MCP server later (per request over HTTP), instead of failing on the first client request.
+        services.AddSingleton(RepositoryLocation.FromConfiguration(configuration));
         services.AddSingleton<IValidateOptions<GuardianOptions>, GuardianOptionsValidator>();
         services.AddOptions<GuardianOptions>()
             .Bind(configuration.GetSection(GuardianOptions.SectionName))
-            .PostConfigure(options => options.RepositoryPath = ToFullPath(options.RepositoryPath))
+            .PostConfigure(options => options.RepositoryPath =
+                RepositoryLocation.Parse(options.RepositoryPath) is RepositoryLocation.Local local ? local.FullPath : options.RepositoryPath)
+            .ValidateOnStart();
+
+        services.AddSingleton<IValidateOptions<RemoteOptions>, RemoteOptionsValidator>();
+        services.AddOptions<RemoteOptions>()
+            .Bind(configuration.GetSection(RemoteOptions.SectionName))
             .ValidateOnStart();
 
         services.AddSingleton<IValidateOptions<HttpAuthOptions>, HttpAuthOptionsValidator>();
@@ -54,7 +63,9 @@ public static class GuardianServiceCollectionExtensions
         services.Configure<CheckOptions>(configuration.GetSection(CheckOptions.SectionName));
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IProcessRunner, ProcessRunner>();
-        services.AddSingleton<IGitRepository, GitRepository>();
+        services.AddSingleton<GitRepository>();
+        services.AddSingleton<IGitRepository>(sp => sp.GetRequiredService<GitRepository>());
+        services.AddSingleton<IRepositorySource>(sp => sp.GetRequiredService<GitRepository>());
 
         // Instructions are composed when McpServerOptions are first built, so contributors that are
         // registered after this call (by tests, or by features added later) are included.
@@ -106,19 +117,19 @@ public static class GuardianServiceCollectionExtensions
             .WithTasks(
                 new InMemoryMcpTaskStore { DefaultPollIntervalMs = 1000, DefaultTimeToLive = TimeSpan.FromHours(1) },
                 options => options.ExecutionModeSelector = GuardianTaskModes.Select)
-            .WithTools<RepositoryTools>()
-            .WithTools<EventTools>()
-            .WithTools<CheckTools>()
-            .WithTools<SecurityTools>()
-            .WithTools<DependencyTools>()
-            .WithTools<GitHubTools>()
-            .WithTools<ScanTools>()
+            .WithGuardianTools<RepositoryTools>()
+            .WithGuardianTools<EventTools>()
+            .WithGuardianTools<CheckTools>()
+            .WithGuardianTools<SecurityTools>()
+            .WithGuardianTools<DependencyTools>()
+            .WithGuardianTools<GitHubTools>()
+            .WithGuardianTools<ScanTools>()
             .WithResources<RepositoryResources>()
             .WithResources<CheckResources>()
             .WithResources<ScanResources>();
     }
 
-    /// <summary>Binds <see cref="GitHubOptions"/> and registers the GitHub token provider, repository resolver and REST client.</summary>
+    /// <summary>Binds <see cref="GitHubOptions"/> and registers the GitHub token provider, repository resolver, REST client and read-only repository API.</summary>
     internal static IServiceCollection AddGitHubIntegration(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton<IValidateOptions<GitHubOptions>, GitHubOptionsValidator>();
@@ -129,6 +140,10 @@ public static class GuardianServiceCollectionExtensions
         services.AddSingleton<IGitHubTokenProvider, GitHubTokenProvider>();
         services.AddSingleton<IGitHubRepositoryResolver, GitHubRepositoryResolver>();
         services.AddHttpClient<IGitHubClient, GitHubClient>(GitHubClient.HttpClientName);
+        // Tarball redirects are followed by hand: the redirect target must be allowlisted and must not receive the token.
+        services.AddHttpClient(GitHubRepositoryApi.ArchiveHttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+        services.AddSingleton<IGitHubRepositoryApi, GitHubRepositoryApi>();
 
         // The poller is a singleton whenever GitHub is enabled (tests drive it directly); it runs as a hosted
         // service only when polling is enabled too.
@@ -144,6 +159,34 @@ public static class GuardianServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// The SDK's <c>WithTools&lt;T&gt;</c> (2.2.0) plus <see cref="GuardianJsonSchema.CreateOptions"/>, which that overload
+    /// cannot pass: without them a value written by a custom converter (a timestamp) is advertised as any value.
+    /// </summary>
+    private static IMcpServerBuilder WithGuardianTools<TToolType>(this IMcpServerBuilder builder)
+    {
+        foreach (var method in typeof(TToolType).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+        {
+            if (method.GetCustomAttribute<McpServerToolAttribute>() is null)
+            {
+                continue;
+            }
+
+            builder.Services.AddSingleton(services => method.IsStatic
+                ? McpServerTool.Create(method, options: ToolOptions(services))
+                : McpServerTool.Create(method, static request => CreateTarget(request.Services, typeof(TToolType)), ToolOptions(services)));
+        }
+
+        return builder;
+    }
+
+    private static McpServerToolCreateOptions ToolOptions(IServiceProvider services) =>
+        new() { Services = services, SchemaCreateOptions = GuardianJsonSchema.CreateOptions };
+
+    // As in the SDK: a new instance per invocation, with its constructor dependencies from the request's services.
+    private static object CreateTarget(IServiceProvider? services, Type type) =>
+        services is not null ? ActivatorUtilities.CreateInstance(services, type) : Activator.CreateInstance(type)!;
 
     /// <summary>Webhooks are offered on authenticated HTTP only (ruling R5); stdio never offers them.</summary>
     private static bool WebhooksEnabled(IConfiguration configuration)
@@ -162,9 +205,6 @@ public static class GuardianServiceCollectionExtensions
         var configured = configuration[$"{GuardianOptions.SectionName}:{nameof(GuardianOptions.SkillsDirectory)}"];
         return string.IsNullOrWhiteSpace(configured) ? null : Path.GetFullPath(configured);
     }
-
-    // Empty values are left for validation to report; GetFullPath would throw for them.
-    private static string ToFullPath(string path) => string.IsNullOrWhiteSpace(path) ? path : Path.GetFullPath(path);
 
     private static string ResolveServerVersion()
     {
